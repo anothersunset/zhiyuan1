@@ -237,7 +237,44 @@ public class AgentDecisionService {
                 (containsAny(normalized, "当前") && containsAny(normalized, "志愿", "方案"))) {
             return new AgentDecision(AgentToolNames.GET_CURRENT_PLAN, "我先帮你查看当前志愿方案。");
         }
+        // --- 对话续槽：上一轮助手主动追问"专业方向"，本轮短回复即填槽答案 ---
+        // 与"删除确认"同属任务型对话槽位：Agent 发起澄清后，下一轮按答案解释。
+        if (pendingMajorDirectionSlot(recentMessages)) {
+            String direction = extractMajorKeyword(normalized);
+            if (direction != null) {
+                return new AgentDecision(
+                        AgentToolNames.RECOMMEND_MAJORS,
+                        "好的，按“%s”方向基于你的画像生成专业推荐。".formatted(direction),
+                        Map.of("majorKeyword", direction)
+                );
+            }
+            if (containsAny(normalized, "不知道", "随便", "都行", "没有", "不确定")) {
+                return new AgentDecision(AgentToolNames.REPLY, "那不如先看学校推荐？回复“帮我推荐学校”即可。");
+            }
+            return new AgentDecision(AgentToolNames.REPLY,
+                    "没听清专业方向。请回复一个方向，例如：计算机、电子信息、临床医学。");
+        }
         return null;
+    }
+
+    /**
+     * 对话续槽感知：最近一条助手消息是否是"专业方向追问"。
+     * 纯从最近消息窗口推导，与删除确认槽位同一模式，不引入额外存储。
+     */
+    private boolean pendingMajorDirectionSlot(List<AgentMessage> recentMessages) {
+        if (recentMessages == null || recentMessages.isEmpty()) {
+            return false;
+        }
+        for (int i = recentMessages.size() - 1; i >= 0; i--) {
+            AgentMessage message = recentMessages.get(i);
+            if (!AgentRoles.ASSISTANT.equals(message.getRole())
+                    || !AgentMessageTypes.TEXT.equals(message.getMessageType())) {
+                continue;
+            }
+            String content = safeContent(message);
+            return content.contains("告诉我方向") && content.contains("专业推荐");
+        }
+        return false;
     }
 
     private boolean hasPendingDeleteConfirmation(List<AgentMessage> recentMessages, int selectionIndex) {

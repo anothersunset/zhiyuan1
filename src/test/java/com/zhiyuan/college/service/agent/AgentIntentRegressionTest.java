@@ -200,6 +200,35 @@ class AgentIntentRegressionTest {
         assertTrue(d.getReply().contains("方案名"));
     }
 
+    // ---------- 对话续槽：追问后的短回复填槽（2026-09 用户实测发现） ----------
+
+    @Test
+    void majorDirectionSlot_followUpAnswer_fillsSlot() {
+        List<AgentMessage> ctx = List.of(
+                userText("推荐适合我的专业"),
+                assistantText("想看哪一类专业？告诉我方向（例如：计算机、电子信息、临床医学），我再基于你的画像生成专业推荐。"));
+        AgentDecision d = service.decide("电子信息", ctx, null);
+        assertEquals(AgentToolNames.RECOMMEND_MAJORS, d.getAction());
+        assertEquals("电子信息", String.valueOf(d.getToolArgs().get("majorKeyword")));
+    }
+
+    @Test
+    void majorDirectionSlot_unknownAnswer_reGuides() {
+        List<AgentMessage> ctx = List.of(
+                userText("推荐适合我的专业"),
+                assistantText("想看哪一类专业？告诉我方向（例如：计算机、电子信息、临床医学），我再基于你的画像生成专业推荐。"));
+        AgentDecision d = service.decide("不知道", ctx, null);
+        assertEquals(AgentToolNames.REPLY, d.getAction());
+        assertTrue(d.getReply().contains("学校推荐"));
+    }
+
+    @Test
+    void bareKeyword_withoutPendingSlot_mustNotGuessIntent() {
+        // 无追问上下文时，孤立的"电子信息"不得被擅自当作专业推荐指令
+        AgentDecision d = decide("电子信息");
+        assertEquals(AgentToolNames.REPLY, d.getAction());
+    }
+
     // ---------- 负向防护：不得误触发工具 ----------
 
     @ParameterizedTest(name = "[负例] {0} → REPLY")
@@ -216,6 +245,22 @@ class AgentIntentRegressionTest {
     // ---------- fixtures ----------
 
     /** 构造真实删除确认上下文：用户删除请求 → 助手确认提示（匹配逻辑要求两段连续）。 */
+    private AgentMessage userText(String content) {
+        AgentMessage message = new AgentMessage();
+        message.setRole(AgentRoles.USER);
+        message.setMessageType(AgentMessageTypes.TEXT);
+        message.setContent(content);
+        return message;
+    }
+
+    private AgentMessage assistantText(String content) {
+        AgentMessage message = new AgentMessage();
+        message.setRole(AgentRoles.ASSISTANT);
+        message.setMessageType(AgentMessageTypes.TEXT);
+        message.setContent(content);
+        return message;
+    }
+
     private List<AgentMessage> pendingDeleteContext(int selectionIndex) {
         AgentMessage userMessage = new AgentMessage();
         userMessage.setRole(AgentRoles.USER);

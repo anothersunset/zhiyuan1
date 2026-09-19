@@ -58,6 +58,7 @@ public class AgentReplyFormatter {
         String province = user != null && user.getExamProvince() != null ? user.getExamProvince() : "未知";
         JsonNode userRankNode = payload.path("userRank");
         String userRank = userRankNode.isMissingNode() || userRankNode.isNull() ? "暂无" : String.valueOf(userRankNode.asInt());
+        boolean majorFirst = "MAJOR_FIRST".equals(payload.path("recommendationMode").asText(""));
 
         // Group items by strategy
         Map<String, StringBuilder> groups = new LinkedHashMap<>();
