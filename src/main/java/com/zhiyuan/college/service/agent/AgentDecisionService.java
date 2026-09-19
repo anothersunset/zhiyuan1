@@ -206,7 +206,13 @@ public class AgentDecisionService {
         // --- 校名优先：显式校名 + 专业/热门/推荐 → 该校详情（专业列表） ---
         // "推荐湘潭大学热门专业"是"看该校的专业"，不是拿"湘潭大学热门"当专业关键词查库
         // （2026-09 用户实测：关键词污染导致答非所问）。序号引用场景仍走 getSchoolDetail。
-        String mentionedSchoolForMajor = extractLongestSchoolName(normalized);
+        // 先剥离前导动词再匹配，避免正则从"推"起步吃出"推荐湘潭大学"。
+        String strippedForSchool = normalized
+                .replace("帮我", "▌").replace("请帮我", "▌").replace("请", "▌")
+                .replace("给我", "▌").replace("推荐", "▌").replace("介绍一下", "▌")
+                .replace("介绍", "▌").replace("看看", "▌").replace("查一下", "▌")
+                .replace("查询", "▌").replace("查查", "▌");
+        String mentionedSchoolForMajor = extractLongestSchoolName(strippedForSchool);
         if (mentionedSchoolForMajor != null
                 && !containsOrdinalReference(normalized)
                 && containsAny(normalized, "推荐", "热门", "专业")) {
