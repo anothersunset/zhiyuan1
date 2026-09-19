@@ -595,7 +595,7 @@ public class AgentDecisionService {
         return !containsAny(text, "推荐", "适合报", "能上", "录取", "概率", "院校", "学校", "志愿");
     }
 
-    /** 追溯最近聊到的学校名：名称详情工具消息优先，其次任意消息文本中的校名。 */
+    /** 追溯最近聊到的学校名：名称详情工具消息优先，其次任意消息文本中的校名（取最长匹配，防"按学校名查询"误提取）。 */
     private String findLastMentionedSchool(List<AgentMessage> recentMessages) {
         if (recentMessages == null) {
             return null;
@@ -614,12 +614,32 @@ public class AgentDecisionService {
                     // fall through to text scan
                 }
             }
-            String schoolName = extractSchoolName(safeContent(message));
-            if (schoolName != null) {
-                return schoolName;
+            // 助手消息是模板文本（"已按学校名查询 X 的详情"），从中提取会拿到
+            // "已按学校"这类伪校名——文本扫描只信用户消息。
+            if (AgentRoles.USER.equals(message.getRole())) {
+                String schoolName = extractLongestSchoolName(safeContent(message));
+                if (schoolName != null) {
+                    return schoolName;
+                }
             }
         }
         return null;
+    }
+
+    /** 取文本中**最长**的校名匹配："已按学校名查询 湖南师范大学 的详情"应得湖南师范大学，而非"已按学校"。 */
+    private String extractLongestSchoolName(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Matcher matcher = SCHOOL_NAME_DETAIL_PATTERN.matcher(text);
+        String best = null;
+        while (matcher.find()) {
+            String found = matcher.group(1);
+            if (best == null || found.length() > best.length()) {
+                best = found;
+            }
+        }
+        return best;
     }
 
     private boolean containsMajorOverviewCue(String text) {

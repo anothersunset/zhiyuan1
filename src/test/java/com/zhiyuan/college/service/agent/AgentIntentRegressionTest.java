@@ -261,9 +261,20 @@ class AgentIntentRegressionTest {
 
     @Test
     void schoolContext_pronounFollowUp_routesToMentionedSchool() {
+        // 模拟真实持久化结构：byName 的 tool_call 与 tool_result 均带 toolName/payload
+        AgentMessage detailCall = userText("你知道湖南师范大学吗");
+        detailCall.setRole(AgentRoles.ASSISTANT);
+        detailCall.setMessageType(AgentMessageTypes.TOOL_CALL);
+        detailCall.setToolName(AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME);
+        detailCall.setPayloadJson("{\"toolArgs\":{\"universityName\":\"湖南师范大学\"}}");
+        AgentMessage detailResult = assistantText("已按学校名查询 湖南师范大学 的详情，当前可参考 36 个专业，例如：体育教育、学前教育、教育学。");
+        detailResult.setMessageType(AgentMessageTypes.TOOL_RESULT);
+        detailResult.setToolName(AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME);
+        detailResult.setPayloadJson("{\"universityName\":\"湖南师范大学\",\"majors\":[\"教育学\"]}");
         List<AgentMessage> ctx = List.of(
                 userText("你知道湖南师范大学吗"),
-                assistantText("已按学校名查询 湖南师范大学 的详情，当前可参考 36 个专业，例如：体育教育、学前教育、教育学。"));
+                detailCall,
+                detailResult);
         AgentDecision d = service.decide("帮我推荐他的热门专业", ctx, null);
         assertEquals(AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME, d.getAction());
         assertEquals("湖南师范大学", String.valueOf(d.getToolArgs().get("universityName")));

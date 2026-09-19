@@ -87,7 +87,8 @@ public class SchoolDetailService {
     public SchoolDetailResponse getSchoolDetailByName(String universityName, String province, String subjectType) {
         University university = universityMapper.findByExactName(universityName == null ? null : universityName.trim());
         if (university == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "school name not found in current dataset");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "当前数据集暂未收录该校，请换一所数据集内的学校试试");
         }
         return getSchoolDetail(university.getId(), province, subjectType);
     }
