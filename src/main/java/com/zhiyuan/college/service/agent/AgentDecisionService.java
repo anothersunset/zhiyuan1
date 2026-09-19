@@ -32,6 +32,7 @@ public class AgentDecisionService {
 
     /** 常见专业关键词：精确子串匹配优先于正则，避免"推荐好的计算机专业"捕获到"好的计算机"。 */
     private static final List<String> MAJOR_KEYWORDS = List.of(
+            "计算机科学与技术", "软件工程", "电子信息工程",
             "计算机", "软件", "网络", "信息安全", "法学", "护理",
             "人工智能", "AI", "机器学习", "数据科学", "大数据",
             "师范", "教育学", "汉语言", "数学", "物理",
@@ -95,7 +96,7 @@ public class AgentDecisionService {
     }
 
     private static final String DEFAULT_REPLY_TEXT =
-            "当前 agent 支持查看画像、查看当前志愿方案、查询专业介绍、生成学校/专业推荐、查看学校详情，也可以把最近推荐里的某一项加入志愿单。删除操作需要你明确确认。";
+            "这句话我还没理解。你可以试试：“帮我推荐学校”、“看看我的画像”、“计算机专业学什么”、“把第 1 所加入志愿单”，或直接描述你的需求，我会调用对应工具完成。";
 
     private AgentDecision defaultReply() {
         return new AgentDecision(AgentToolNames.REPLY, DEFAULT_REPLY_TEXT);
@@ -213,7 +214,8 @@ public class AgentDecisionService {
         }
 
         // --- #8: recommendSchools (unchanged) ---
-        if (containsAny(normalized, "推荐学校", "学校推荐", "推荐院校", "院校推荐", "学校怎么报") ||
+        if (containsAny(normalized, "推荐学校", "学校推荐", "推荐院校", "院校推荐", "学校怎么报",
+                "推荐志愿", "志愿推荐", "推荐大学", "大学推荐", "帮我报志愿", "推荐一下志愿") ||
                 (containsAny(normalized, "冲稳保") && containsAny(normalized, "志愿", "方案", "推荐", "浓度", "梯度"))) {
             return new AgentDecision(AgentToolNames.RECOMMEND_SCHOOLS, "我先基于你当前画像给你生成学校推荐。");
         }
@@ -271,6 +273,12 @@ public class AgentDecisionService {
     }
 
     private String buildSystemPrompt() {
+        String tools = agentToolRegistry.getToolDescriptions().entrySet().stream()
+                .map(entry -> "- " + entry.getKey() + ": " + entry.getValue())
+                .collect(Collectors.joining("\\n"));
+        String actionEnum = agentToolRegistry.listSpecs().stream()
+                .map(AgentToolSpec::name)
+                .collect(Collectors.joining(" | ")) + " | reply";
         return """
                 你是高考志愿助手的受控编排器。你只能做十一种决策：
                 1. 调用 getUserProfile
@@ -287,14 +295,9 @@ public class AgentDecisionService {
 
                 你必须只输出 JSON：
                 {
-                  "action": "getUserProfile | getCurrentPlan | getSchoolDetail | getSchoolDetailByName | getMajorOverview | recommendSchools | recommendMajors | addPlanItem | removePlanItem | savePlan | reply",
+                  "action": "%s",
                   "reply": "给用户的简短说明",
-                  "toolArgs": {
-                    "selectionIndex": "getSchoolDetail/addPlanItem/removePlanItem 时可选，默认 1",
-                    "universityName": "getSchoolDetailByName 时必填",
-                    "majorKeyword": "recommendMajors 或 getMajorOverview 时必填",
-                    "planName": "savePlan 时必填"
-                  }
+                  "toolArgs": { 按下方工具参数说明提供 }
                 }
 
                 对删除类操作，如果用户没有明确确认，不要调用 removePlanItem，只返回 reply 让用户确认。
@@ -306,13 +309,12 @@ public class AgentDecisionService {
                 4. "看看XX大学"在没明确详情请求时不应该调 getSchoolDetailByName："看看能不能上XX"是推荐意图，应走 recommendSchools。
                 5. "XX专业怎么样"、"就业前景"、"学什么"、"课程介绍"等专业知识问题必须调用 getMajorOverview；只有明确要求“推荐专业/适合报什么专业”时才调用 recommendMajors。
                 6. 用户只要求查看画像时只调用 getUserProfile，不要额外调用推荐工具。
+                7. 结合"系统实时状态"选择工具：最近推荐不可用或为 0 项时，不要调用 addPlanItem/removePlanItem（应先 recommendSchools）；引用"第 N 个"时 N 不得超过最近推荐的项数。
 
                 不要输出任何额外文本。
-                可用工具：
+                可用工具与参数 Schema（由注册表自动生成）：
                 %s
-                """.formatted(agentToolRegistry.getToolDescriptions().entrySet().stream()
-                .map(entry -> "- " + entry.getKey() + ": " + entry.getValue())
-                .collect(Collectors.joining("\n")));
+                """.formatted(actionEnum, agentToolRegistry.getToolSchemaMarkdown() + tools);
     }
 
     private String buildUserPrompt(String userMessage, List<AgentMessage> recentMessages, UserAccount user) {
@@ -337,8 +339,69 @@ public class AgentDecisionService {
         profile.put("subjectType", user == null || user.getSubjectType() == null ? null : user.getSubjectType().name());
         profile.put("examProvince", user == null ? null : user.getExamProvince());
         return "用户画像: " + profile
+                + "\n系统实时状态:\n" + buildSystemSnapshot(recentMessages, user)
                 + "\n最近消息:\n" + history
                 + "\n当前用户消息:\n" + userMessage;
+    }
+
+    /**
+     * Real-time perception of the volunteer-service system for LLM intent decisions:
+     * profile completeness, whether the latest recommendation round is still
+     * referenceable (and how many items), and the last known draft-sheet state.
+     * Derived purely from the recent-message window and the user record, so no
+     * extra service calls are needed on the decision path.
+     */
+    private String buildSystemSnapshot(List<AgentMessage> recentMessages, UserAccount user) {
+        boolean profileComplete = user != null && user.getScore() != null
+                && user.getSubjectType() != null
+                && user.getExamProvince() != null && !user.getExamProvince().isBlank();
+        StringBuilder sb = new StringBuilder();
+        sb.append("- 用户画像：").append(profileComplete
+                ? "%s/%s/%s分（完整，可直接推荐）".formatted(
+                        user.getExamProvince(), user.getSubjectType().name(), user.getScore())
+                : "不完整（调用推荐类工具前需先引导完善）");
+
+        String recommendationStatus = "不可用（需先推荐才能引用“第 N 个”或加入志愿单）";
+        if (recentMessages != null) {
+            for (int i = recentMessages.size() - 1; i >= 0; i--) {
+                AgentMessage message = recentMessages.get(i);
+                if (!AgentMessageTypes.TOOL_RESULT.equals(message.getMessageType())
+                        || (!AgentToolNames.RECOMMEND_SCHOOLS.equals(message.getToolName())
+                            && !AgentToolNames.RECOMMEND_MAJORS.equals(message.getToolName()))
+                        || message.getPayloadJson() == null || message.getPayloadJson().isBlank()) {
+                    continue;
+                }
+                try {
+                    JsonNode topItems = objectMapper.readTree(message.getPayloadJson()).path("topItems");
+                    if (topItems.isArray()) {
+                        recommendationStatus = "可用（共 %d 项，可用“第 N 个”引用或加入志愿单）"
+                                .formatted(topItems.size());
+                    }
+                } catch (Exception ignored) {
+                    // keep default status
+                }
+                break;
+            }
+        }
+        sb.append("\n- 最近一轮推荐：").append(recommendationStatus);
+
+        String planHint = "暂无线索（可调用 getCurrentPlan 查询）";
+        if (recentMessages != null) {
+            for (int i = recentMessages.size() - 1; i >= 0; i--) {
+                AgentMessage message = recentMessages.get(i);
+                if (AgentMessageTypes.TOOL_RESULT.equals(message.getMessageType())
+                        && (AgentToolNames.GET_CURRENT_PLAN.equals(message.getToolName())
+                            || AgentToolNames.ADD_PLAN_ITEM.equals(message.getToolName())
+                            || AgentToolNames.REMOVE_PLAN_ITEM.equals(message.getToolName()))) {
+                    String content = message.getContent();
+                    planHint = content == null || content.isBlank() ? "暂无线索"
+                            : content.length() > 60 ? content.substring(0, 60) + "…" : content;
+                    break;
+                }
+            }
+        }
+        sb.append("\n- 志愿单最近状态：").append(planHint);
+        return sb.toString();
     }
 
     private Map<String, Object> readToolArgs(JsonNode toolArgsNode) {
@@ -355,11 +418,16 @@ public class AgentDecisionService {
         if (text == null || text.isBlank()) {
             return null;
         }
-        // 先精确匹配常见专业关键词：避免"推荐好的计算机专业"被正则捕获成"好的计算机"
+        // 先精确匹配常见专业关键词：避免"推荐好的计算机专业"被正则捕获成"好的计算机"。
+        // 按「最长命中优先」匹配："软件工程就业前景"应命中"软件工程"而非其子串"软件"。
+        String best = null;
         for (String keyword : MAJOR_KEYWORDS) {
-            if (text.contains(keyword)) {
-                return keyword;
+            if (text.contains(keyword) && (best == null || keyword.length() > best.length())) {
+                best = keyword;
             }
+        }
+        if (best != null) {
+            return best;
         }
         // 再走正则提取列表未覆盖的专业名，并清洗形容词等修饰词
         Matcher afterMatcher = RECOMMEND_MAJOR_AFTER_PATTERN.matcher(text);

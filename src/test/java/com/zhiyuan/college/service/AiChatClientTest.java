@@ -201,8 +201,7 @@ class AgentToolExecutorValidationTest {
 
     @Test
     void execute_shouldRejectInvalidMajorKeyword() {
-        AgentToolRegistry registry = mock(AgentToolRegistry.class);
-        when(registry.supports(any())).thenReturn(true);
+        AgentToolRegistry registry = new AgentToolRegistry();
         AgentToolFacade facade = mock(AgentToolFacade.class);
         AgentToolExecutor executor = new AgentToolExecutor(registry, facade);
 
@@ -217,8 +216,7 @@ class AgentToolExecutorValidationTest {
 
     @Test
     void execute_shouldRejectOutOfRangeSelectionIndex() {
-        AgentToolRegistry registry = mock(AgentToolRegistry.class);
-        when(registry.supports(any())).thenReturn(true);
+        AgentToolRegistry registry = new AgentToolRegistry();
         AgentToolFacade facade = mock(AgentToolFacade.class);
         AgentToolExecutor executor = new AgentToolExecutor(registry, facade);
 
@@ -233,8 +231,7 @@ class AgentToolExecutorValidationTest {
 
     @Test
     void execute_shouldRejectInvalidPlanName() {
-        AgentToolRegistry registry = mock(AgentToolRegistry.class);
-        when(registry.supports(any())).thenReturn(true);
+        AgentToolRegistry registry = new AgentToolRegistry();
         AgentToolFacade facade = mock(AgentToolFacade.class);
         AgentToolExecutor executor = new AgentToolExecutor(registry, facade);
 
