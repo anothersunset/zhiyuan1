@@ -10,7 +10,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class AgentToolExecutor {
 
-    private static final int MAX_SELECTION_INDEX = 6;
+    private static final int MAX_SELECTION_INDEX = 45;
 
     private final AgentToolRegistry agentToolRegistry;
     private final AgentToolFacade agentToolFacade;
@@ -96,7 +96,10 @@ public class AgentToolExecutor {
         }
         int selectionIndex = parseInteger(toolArgs.get("selectionIndex"), "selectionIndex");
         if (selectionIndex <= 0 || selectionIndex > MAX_SELECTION_INDEX) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "selectionIndex must be between 1 and 6");
+            // Upper bound mirrors the 45-slot volunteer sheet, not a tool cap: the
+            // actual availability check against the recommendation round lives in
+            // AgentToolFacade and reports the real result count on overflow.
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "selectionIndex must be between 1 and " + MAX_SELECTION_INDEX);
         }
     }
 

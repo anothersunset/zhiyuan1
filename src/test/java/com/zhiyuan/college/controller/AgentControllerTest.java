@@ -379,7 +379,7 @@ class AgentControllerTest {
 
         ResponseStatusException selectionIndexError = Assertions.assertThrows(
                 ResponseStatusException.class,
-                () -> agentToolExecutor.execute(1L, AgentToolNames.GET_SCHOOL_DETAIL, Map.of("selectionIndex", 9), List.of())
+                () -> agentToolExecutor.execute(1L, AgentToolNames.GET_SCHOOL_DETAIL, Map.of("selectionIndex", 99), List.of())
         );
         Assertions.assertTrue(selectionIndexError.getReason().contains("selectionIndex"));
     }

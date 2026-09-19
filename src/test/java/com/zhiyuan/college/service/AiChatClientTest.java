@@ -224,7 +224,7 @@ class AgentToolExecutorValidationTest {
 
         ResponseStatusException exception = assertThrows(
                 ResponseStatusException.class,
-                () -> executor.execute(1L, AgentToolNames.GET_SCHOOL_DETAIL, Map.of("selectionIndex", 9), List.of())
+                () -> executor.execute(1L, AgentToolNames.GET_SCHOOL_DETAIL, Map.of("selectionIndex", 99), List.of())
         );
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
