@@ -229,6 +229,34 @@ class AgentIntentRegressionTest {
         assertEquals(AgentToolNames.REPLY, d.getAction());
     }
 
+    // ---------- 2026-09 真实语料审计补齐（c05/c14/c16/c22） ----------
+
+    @ParameterizedTest(name = "[学校推荐·补] {0}")
+    @CsvSource({
+            "给我推荐几所大学",
+            "推荐几所大学"
+    })
+    void schoolRecommendation_fewUniversities(String phrase) {
+        assertRoutes(phrase, AgentToolNames.RECOMMEND_SCHOOLS, null);
+    }
+
+    @Test
+    void profileQuery_baoKaoInfo() {
+        assertRoutes("我的报考信息是什么", AgentToolNames.GET_USER_PROFILE, null);
+    }
+
+    @Test
+    void currentPlan_myVolunteerSheet() {
+        assertRoutes("我现在的志愿单里有什么", AgentToolNames.GET_CURRENT_PLAN, null);
+    }
+
+    @Test
+    void removePlanItem_shanDiaoVerb() {
+        AgentDecision d = decide("把第2个志愿删掉");
+        assertEquals(AgentToolNames.REPLY, d.getAction());
+        assertTrue(d.getReply().contains("确认删除"));
+    }
+
     // ---------- 负向防护：不得误触发工具 ----------
     @ParameterizedTest(name = "[负例] {0} → REPLY")
     @CsvSource({

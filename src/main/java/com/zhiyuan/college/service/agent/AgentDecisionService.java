@@ -121,7 +121,7 @@ public class AgentDecisionService {
         // --- P1 #2: 删除提示路由收紧 ---
         // 要求 "删除/移除" + "志愿/方案" + ("当前" 或 序号引用)
         // 排除过去时陈述，避免"我刚把第3条志愿删除了"误触发
-        if (containsAny(normalized, "删除", "移除")
+        if (containsAny(normalized, "删除", "移除", "删掉")
                 && containsAny(normalized, "志愿", "方案")
                 && (containsOrdinalReference(normalized) || containsAny(normalized, "当前"))
                 && !containsAny(normalized, "刚删除", "刚移除", "已经删除", "已经移除",
@@ -215,7 +215,8 @@ public class AgentDecisionService {
 
         // --- #8: recommendSchools (unchanged) ---
         if (containsAny(normalized, "推荐学校", "学校推荐", "推荐院校", "院校推荐", "学校怎么报",
-                "推荐志愿", "志愿推荐", "推荐大学", "大学推荐", "帮我报志愿", "推荐一下志愿") ||
+                "推荐志愿", "志愿推荐", "推荐大学", "大学推荐", "帮我报志愿", "推荐一下志愿",
+                "推荐几所", "几所学校", "几所大学") ||
                 (containsAny(normalized, "冲稳保") && containsAny(normalized, "志愿", "方案", "推荐", "浓度", "梯度"))) {
             return new AgentDecision(AgentToolNames.RECOMMEND_SCHOOLS, "我先基于你当前画像给你生成学校推荐。");
         }
@@ -224,6 +225,7 @@ public class AgentDecisionService {
         // 去掉 "分数/省份/科类" 等高频泛词，改为明确问询短语
         // 避免 "我620分想去北京" "我是浙江考生" 等自然语言请求误命中
         if (containsAny(normalized, "我的画像", "查看画像", "查看我的信息", "我的信息是什么", "我的信息有哪些",
+                "我的报考信息", "报考信息是什么", "我的报名信息",
                 "我是什么科类", "我的科类", "我的分数是多少", "我的分数",
                 "我是哪个省份", "我的省份", "我的考生信息")
                 && !containsAny(normalized, "修改", "更新", "编辑", "完善", "设置")) {
@@ -233,7 +235,8 @@ public class AgentDecisionService {
         // --- #10: getCurrentPlan (unchanged) ---
         // 必须含明确"查看/现有"语境，避免被"生成方案""冲稳保方案"等含"志愿/方案"的请求误触发
         if (containsAny(normalized, "当前表", "当前单", "当前志愿", "当前方案", "我的志愿", "我的方案",
-                        "已有志愿", "已有方案", "看看志愿", "看看方案", "之前生成", "刚才生成") ||
+                        "已有志愿", "已有方案", "看看志愿", "看看方案", "之前生成", "刚才生成",
+                        "志愿单里", "我的志愿单", "志愿单有什么", "志愿单有哪些") ||
                 (containsAny(normalized, "当前") && containsAny(normalized, "志愿", "方案"))) {
             return new AgentDecision(AgentToolNames.GET_CURRENT_PLAN, "我先帮你查看当前志愿方案。");
         }
