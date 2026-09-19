@@ -230,7 +230,6 @@ class AgentIntentRegressionTest {
     }
 
     // ---------- 负向防护：不得误触发工具 ----------
-
     @ParameterizedTest(name = "[负例] {0} → REPLY")
     @CsvSource({
             "今天天气怎么样",

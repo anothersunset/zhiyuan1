@@ -354,21 +354,30 @@ public class AgentDecisionService {
                 """.formatted(actionEnum, agentToolRegistry.getToolSchemaMarkdown() + tools);
     }
 
-    private String buildUserPrompt(String userMessage, List<AgentMessage> recentMessages, UserAccount user) {
-        String history = recentMessages.stream()
-                .map(message -> {
-                    String payloadText = "";
-                    if (message.getPayloadJson() != null && !message.getPayloadJson().isBlank()) {
-                        payloadText = " | payload=" + message.getPayloadJson();
-                    }
-                    return "%s[%s]: %s%s".formatted(
-                            message.getRole(),
-                            message.getMessageType(),
-                            message.getContent(),
-                            payloadText
-                    );
-                })
-                .collect(Collectors.joining("\n"));
+    /**
+     * 上下文装配（context engineering，参考 Claude Code / ZCode 的上下文管理纪律）：
+     * <ul>
+     *   <li>大载荷出带：工具结果 JSON（如 55 项推荐载荷）永不进入提示词正文，
+     *       只保留摘要与条数指针——执行层从消息库按需取用完整数据；</li>
+     *   <li>两级历史压缩：窗口内较早的消息压成单行摘要，最近若干条保留原文（仍截断），
+     *       同样的 token 预算容纳更多轮次；</li>
+     *   <li>系统实时状态快照：见 buildSystemSnapshot。</li>
+     * </ul>
+     */
+    String buildUserPrompt(String userMessage, List<AgentMessage> recentMessages, UserAccount user) {
+        int total = recentMessages == null ? 0 : recentMessages.size();
+        int digestCount = Math.max(0, total - VERBATIM_HISTORY_MESSAGES);
+        StringBuilder history = new StringBuilder();
+        if (digestCount > 0) {
+            history.append("（更早 ").append(digestCount).append(" 条消息，摘要）\n");
+            for (AgentMessage message : recentMessages.subList(0, digestCount)) {
+                history.append(renderDigest(message)).append('\n');
+            }
+            history.append("—— 以上为摘要，以下为最近消息原文 ——\n");
+        }
+        for (AgentMessage message : recentMessages.subList(digestCount, total)) {
+            history.append(renderRecent(message)).append('\n');
+        }
         Map<String, Object> profile = new LinkedHashMap<>();
         profile.put("userId", user == null ? null : user.getId());
         profile.put("username", user == null ? null : user.getUsername());
@@ -379,6 +388,66 @@ public class AgentDecisionService {
                 + "\n系统实时状态:\n" + buildSystemSnapshot(recentMessages, user)
                 + "\n最近消息:\n" + history
                 + "\n当前用户消息:\n" + userMessage;
+    }
+
+    /** 常量：窗口内保留原文的最近消息条数；更早的消息压成摘要。 */
+    private static final int VERBATIM_HISTORY_MESSAGES = 6;
+
+    /** 单条消息在提示词里的内容截断长度（防长 markdown 撑爆 token）。 */
+    private static final int MAX_RENDERED_CONTENT_CHARS = 240;
+
+    /** 较早消息的单行摘要（脱载荷）。 */
+    private String renderDigest(AgentMessage message) {
+        String extra = "";
+        if (AgentMessageTypes.TOOL_RESULT.equals(message.getMessageType())
+                && (AgentToolNames.RECOMMEND_SCHOOLS.equals(message.getToolName())
+                    || AgentToolNames.RECOMMEND_MAJORS.equals(message.getToolName()))
+                && message.getPayloadJson() != null && !message.getPayloadJson().isBlank()) {
+            extra = " | " + recommendPayloadDigest(message.getPayloadJson());
+        }
+        return "- [%s/%s] %s%s".formatted(
+                message.getRole(), message.getMessageType(),
+                truncate(safeContent(message), 80), extra);
+    }
+
+    /** 最近消息的原文渲染：内容截断，载荷只保留摘要指针，完整数据留在消息库。 */
+    private String renderRecent(AgentMessage message) {
+        String extra = "";
+        if (AgentMessageTypes.TOOL_RESULT.equals(message.getMessageType())
+                && message.getPayloadJson() != null && !message.getPayloadJson().isBlank()) {
+            extra = " | " + recommendPayloadDigest(message.getPayloadJson());
+        }
+        return "%s[%s]: %s%s".formatted(
+                message.getRole(), message.getMessageType(),
+                truncate(safeContent(message), MAX_RENDERED_CONTENT_CHARS), extra);
+    }
+
+    /** 从推荐载荷提取"条数 + 前几项名称"的摘要。 */
+    private String recommendPayloadDigest(String payloadJson) {
+        try {
+            JsonNode topItems = objectMapper.readTree(payloadJson).path("topItems");
+            if (!topItems.isArray()) {
+                return "载荷存在";
+            }
+            int total = topItems.size();
+            StringBuilder labels = new StringBuilder();
+            for (int i = 0; i < Math.min(3, total); i++) {
+                String label = topItems.get(i).path("label").asText("");
+                if (!label.isBlank()) {
+                    labels.append(labels.length() == 0 ? "" : "、").append(label);
+                }
+            }
+            return "推荐载荷共 %d 项（前几项：%s；完整数据由执行层按需取用）".formatted(total, labels);
+        } catch (Exception ex) {
+            return "载荷存在";
+        }
+    }
+
+    private String truncate(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() <= max ? text : text.substring(0, max) + "…";
     }
 
     /**
