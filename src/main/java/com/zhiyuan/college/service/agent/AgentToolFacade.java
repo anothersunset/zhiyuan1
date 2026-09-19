@@ -249,7 +249,7 @@ public class AgentToolFacade {
                                        Long targetPlanId,
                                        Map<String, Object> toolArgs,
                                        List<AgentMessage> recentMessages) {
-        ObjectNode selectedItem = resolveSelectedRecommendationItem(toolArgs, recentMessages);
+        ObjectNode selectedItem = resolveSelectedRecommendationItem(userId, toolArgs, recentMessages);
         String group = normalizeGroup(selectedItem.path("group").asText(selectedItem.path("strategy").asText("safe")));
 
         ApplicationPlan plan = findTargetPlan(userId, targetPlanId);
@@ -476,17 +476,50 @@ public class AgentToolFacade {
         }
     }
 
-    private ObjectNode resolveSelectedRecommendationItem(Map<String, Object> toolArgs, List<AgentMessage> recentMessages) {
+    private ObjectNode resolveSelectedRecommendationItem(Long userId, Map<String, Object> toolArgs, List<AgentMessage> recentMessages) {
         int selectionIndex = parseSelectionIndex(toolArgs == null ? null : toolArgs.get("selectionIndex"));
         JsonNode recommendationPayload = findLatestRecommendationPayload(recentMessages);
-        if (recommendationPayload == null || !recommendationPayload.path("topItems").isArray() || recommendationPayload.path("topItems").size() < selectionIndex) {
+        if (recommendationPayload == null) {
+            // The recommendation round fell out of the recent-message window (e.g. the
+            // user browsed school/major details first). Recommendations are deterministic,
+            // so rebuild one from the user's profile instead of failing the turn.
+            recommendationPayload = rebuildRecommendationPayload(userId);
+        }
+        if (recommendationPayload == null || !recommendationPayload.path("topItems").isArray()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No recommendation item available for addPlanItem");
+        }
+        int total = recommendationPayload.path("topItems").size();
+        if (total < selectionIndex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "最近一轮推荐共有 %d 所院校，请改用第 1-%d 所".formatted(total, total));
         }
         JsonNode selected = recommendationPayload.path("topItems").get(selectionIndex - 1);
         if (!(selected instanceof ObjectNode objectNode)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid selected recommendation item");
         }
         return objectNode.deepCopy();
+    }
+
+    private JsonNode rebuildRecommendationPayload(Long userId) {
+        // Profile gaps propagate as-is so the error category stays "profile_incomplete";
+        // only recommendation-engine failures degrade to "recommendation_missing".
+        UserAccount user = requireRecommendationProfile(userId);
+        try {
+            RecommendationResponse response = recommendationService.recommend(
+                    buildRequest(user, RecommendationMode.SCHOOL_FIRST, null));
+            List<Map<String, Object>> topItems = new ArrayList<>();
+            appendItems(topItems, "rush", response.getRush());
+            appendItems(topItems, "safe", response.getSafe());
+            appendItems(topItems, "guarantee", response.getGuarantee());
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("recommendationMode", response.getRecommendationMode() == null ? null : response.getRecommendationMode().name());
+            payload.put("userRank", response.getUserRank());
+            payload.put("topItems", topItems);
+            payload.put("totalCount", topItems.size());
+            return objectMapper.valueToTree(payload);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private ObjectNode resolveSelectedSchoolItem(Map<String, Object> toolArgs, List<AgentMessage> recentMessages, Long userId) {

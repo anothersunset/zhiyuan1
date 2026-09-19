@@ -73,6 +73,7 @@ public interface MajorMapper extends BaseMapper<Major> {
                 WHEN LOWER(name) LIKE CONCAT(LOWER(#{keyword}), '%') THEN 1
                 ELSE 2
               END,
+              CASE WHEN category = '专科' THEN 1 ELSE 0 END,
               LENGTH(name),
               id
             LIMIT 1

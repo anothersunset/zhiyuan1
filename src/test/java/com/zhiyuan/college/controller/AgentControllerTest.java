@@ -210,7 +210,7 @@ class AgentControllerTest {
 
     @Test
     void sendMessage_shouldAddLatestRecommendedItemToPlan() throws Exception {
-        String token = loginAndGetToken("testuser", "123456", 620, "PHYSICS", "浙江");
+        String token = registerProfiledUserAndLogin("planuser01", "planuser123", 620, "PHYSICS", "浙江");
         Long conversationId = createConversation(token, "Plan Agent");
 
         mockMvc.perform(post("/api/agent/conversations/" + conversationId + "/messages")
@@ -343,7 +343,7 @@ class AgentControllerTest {
 
     @Test
     void sendMessage_shouldRejectStaleDeleteConfirmAndHandleToolFailureGracefully() throws Exception {
-        String token = loginAndGetToken("testuser", "123456", 620, "PHYSICS", "浙江");
+        String token = loginBasic("freshuser", "123456");
         Long conversationId = createConversation(token, "Hardening Agent");
 
         mockMvc.perform(post("/api/agent/conversations/" + conversationId + "/messages")
@@ -363,7 +363,7 @@ class AgentControllerTest {
                 .andExpect(jsonPath("$.generatedMessages[1].toolName").value("addPlanItem"))
                 .andExpect(jsonPath("$.generatedMessages[1].payload.success").value(false))
                 .andExpect(jsonPath("$.generatedMessages[1].payload.errorCategory").value("context_missing"))
-                .andExpect(jsonPath("$.generatedMessages[1].payload.errorCode").value("recommendation_missing"))
+                .andExpect(jsonPath("$.generatedMessages[1].payload.errorCode").value("profile_incomplete"))
                 .andExpect(jsonPath("$.generatedMessages[1].payload.errorMessage").isNotEmpty())
                 .andExpect(jsonPath("$.generatedMessages[2].messageType").value("text"))
                 .andExpect(jsonPath("$.generatedMessages[2].content").value(org.hamcrest.Matchers.containsString("当前上下文不足")));
@@ -409,6 +409,45 @@ class AgentControllerTest {
                 .andExpect(status().isOk())
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asLong();
+    }
+
+    private String registerProfiledUserAndLogin(String username,
+                                                 String password,
+                                                 Integer score,
+                                                 String subjectType,
+                                                 String examProvince) throws Exception {
+        String registerRequest = objectMapper.writeValueAsString(Map.of(
+                "username", username,
+                "password", password,
+                "score", score,
+                "subjectType", subjectType));
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerRequest))
+                .andExpect(status().isOk());
+        String profileRequest = objectMapper.writeValueAsString(Map.of(
+                "score", score,
+                "subjectType", subjectType,
+                "examProvince", examProvince));
+        MvcResult profileResult = mockMvc.perform(post("/api/auth/profile")
+                        .header("Authorization", "Bearer " + loginBasic(username, password))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(profileRequest))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(profileResult.getResponse().getContentAsString()).get("token").asText();
+    }
+
+    private String loginBasic(String username, String password) throws Exception {
+        String loginRequest = objectMapper.writeValueAsString(Map.of(
+                "username", username,
+                "password", password));
+        MvcResult result = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginRequest))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("token").asText();
     }
 
     private String loginAndGetToken(String username,

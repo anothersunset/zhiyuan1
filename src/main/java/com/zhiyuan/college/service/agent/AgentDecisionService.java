@@ -23,7 +23,7 @@ public class AgentDecisionService {
     private static final Logger log = LoggerFactory.getLogger(AgentDecisionService.class);
     private static final Pattern RECOMMEND_MAJOR_AFTER_PATTERN = Pattern.compile("推荐(?:一下|几个|一些)?([\\p{IsHan}A-Za-z0-9]{2,12})(?:专业|方向)");
     private static final Pattern RECOMMEND_MAJOR_BEFORE_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,12})(?:专业|方向).{0,8}推荐");
-    private static final Pattern DIGIT_SELECTION_PATTERN = Pattern.compile("第\\s*([1-6])\\s*(?:个|所|条)");
+    private static final Pattern DIGIT_SELECTION_PATTERN = Pattern.compile("第\\s*(\\d{1,2})\\s*(?:个|所|条|项)");
     private static final Pattern SAVE_NAME_PATTERN = Pattern.compile("保存(?:为|成)?[《\u201c\\\"]?([^》\u201d\\n]{2,30})[》\u201d\\\"]?(?:方案)?");
     private static final Pattern SCHOOL_NAME_DETAIL_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,20}(?:大学|学院|学校))");
     private static final Pattern MAJOR_OVERVIEW_PATTERN = Pattern.compile(
@@ -200,6 +200,10 @@ public class AgentDecisionService {
         }
 
         // --- P1 #7: recommendMajors（关键词扩展见 extractMajorKeyword） ---
+        if (containsAny(normalized, "推荐") && containsAny(normalized, "专业", "方向") && majorKeyword == null) {
+            return new AgentDecision(AgentToolNames.REPLY,
+                    "想看哪一类专业？告诉我方向（例如：计算机、电子信息、临床医学），我再基于你的画像生成专业推荐。");
+        }
         if (containsAny(normalized, "推荐") && majorKeyword != null) {
             return new AgentDecision(
                     AgentToolNames.RECOMMEND_MAJORS,
@@ -398,18 +402,24 @@ public class AgentDecisionService {
     }
 
     /** 去掉专业名前的形容词/修饰词，如"推荐好的计算机专业"→"计算机"。 */
+    private static final List<String> KEYWORD_STOPWORDS = List.of(
+            "适合我的", "适合的", "合适的", "我喜欢的", "偏好的", "比较好的", "优秀的", "不错的", "好点的");
+
     private String cleanMajorKeyword(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }
         String cleaned = value.trim();
-        for (String prefix : List.of("好的", "一些", "几个", "合适的", "优秀的", "较好的", "不错的", "好点的")) {
-            if (cleaned.startsWith(prefix) && cleaned.length() > prefix.length()) {
+        for (String prefix : List.of("适合我的", "适合的", "合适的", "我喜欢的", "偏好的",
+                "比较好的", "优秀的", "不错的", "好点的", "好的", "一些", "几个")) {
+            if (cleaned.startsWith(prefix)) {
                 cleaned = cleaned.substring(prefix.length()).trim();
-                break;
             }
         }
-        return cleaned.isBlank() ? null : cleaned;
+        if (cleaned.isBlank() || KEYWORD_STOPWORDS.contains(cleaned)) {
+            return null;
+        }
+        return cleaned;
     }
 
     private int extractSelectionIndex(String text) {
