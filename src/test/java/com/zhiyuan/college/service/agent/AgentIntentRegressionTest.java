@@ -257,6 +257,25 @@ class AgentIntentRegressionTest {
         assertTrue(d.getReply().contains("确认删除"));
     }
 
+    // ---------- 学校上下文续指：指代词 + 专业推荐（2026-09 用户实测截图） ----------
+
+    @Test
+    void schoolContext_pronounFollowUp_routesToMentionedSchool() {
+        List<AgentMessage> ctx = List.of(
+                userText("你知道湖南师范大学吗"),
+                assistantText("已按学校名查询 湖南师范大学 的详情，当前可参考 36 个专业，例如：体育教育、学前教育、教育学。"));
+        AgentDecision d = service.decide("帮我推荐他的热门专业", ctx, null);
+        assertEquals(AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME, d.getAction());
+        assertEquals("湖南师范大学", String.valueOf(d.getToolArgs().get("universityName")));
+    }
+
+    @Test
+    void pronounKeyword_withoutSchoolContext_doesNotLeakAsKeyword() {
+        // 无上下文时"他的热门"不得成为专业关键词（应引导用户给方向）
+        AgentDecision d = decide("帮我推荐他的热门专业");
+        assertEquals(AgentToolNames.REPLY, d.getAction());
+    }
+
     // ---------- 负向防护：不得误触发工具 ----------
     @ParameterizedTest(name = "[负例] {0} → REPLY")
     @CsvSource({

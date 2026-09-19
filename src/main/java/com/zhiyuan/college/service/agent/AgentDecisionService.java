@@ -187,6 +187,22 @@ public class AgentDecisionService {
             );
         }
 
+        // --- 对话续槽（学校上下文）：用"他/它/该校"指代上文学校并问专业/详情 ---
+        // 例："你知道湖南师范大学吗" → "帮我推荐他的热门专业" 应继续路由到该校详情，
+        // 而不是把"他的热门"当成专业关键词查库（2026-09 用户实测答非所问）。
+        String lastMentionedSchool = findLastMentionedSchool(recentMessages);
+        if (lastMentionedSchool != null
+                && containsAny(normalized, "他的", "她的", "它的", "该校", "这所", "这所学校",
+                               "刚才那所", "刚才的学校", "刚才那个学校")
+                && containsAny(normalized, "专业", "详情", "信息")
+                && containsAny(normalized, "推荐", "热门", "介绍", "看看", "哪些", "怎么样")) {
+            return new AgentDecision(
+                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
+                    "好的，基于我们刚聊到的%s，我把它的专业信息整理如下：".formatted(lastMentionedSchool),
+                    Map.of("universityName", lastMentionedSchool)
+            );
+        }
+
         // --- 专业介绍：必须先于推荐处理 ---
         // “XX专业怎么样 / 学什么 / 就业前景”是知识查询，不应被错误地变成
         // recommendMajors（后者会返回当前画像下的院校录取推荐）。
@@ -579,6 +595,33 @@ public class AgentDecisionService {
         return !containsAny(text, "推荐", "适合报", "能上", "录取", "概率", "院校", "学校", "志愿");
     }
 
+    /** 追溯最近聊到的学校名：名称详情工具消息优先，其次任意消息文本中的校名。 */
+    private String findLastMentionedSchool(List<AgentMessage> recentMessages) {
+        if (recentMessages == null) {
+            return null;
+        }
+        for (int i = recentMessages.size() - 1; i >= 0; i--) {
+            AgentMessage message = recentMessages.get(i);
+            if (AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME.equals(message.getToolName())
+                    && message.getPayloadJson() != null && !message.getPayloadJson().isBlank()) {
+                try {
+                    String name = objectMapper.readTree(message.getPayloadJson())
+                            .path("universityName").asText("");
+                    if (!name.isBlank()) {
+                        return name;
+                    }
+                } catch (Exception ignored) {
+                    // fall through to text scan
+                }
+            }
+            String schoolName = extractSchoolName(safeContent(message));
+            if (schoolName != null) {
+                return schoolName;
+            }
+        }
+        return null;
+    }
+
     private boolean containsMajorOverviewCue(String text) {
         return containsAny(text,
                 "怎么样", "好不好", "前景", "就业", "学什么", "学习内容", "课程", "介绍", "发展方向", "就业方向", "适不适合学");
@@ -589,14 +632,15 @@ public class AgentDecisionService {
             "什么", "哪个", "啥", "哪些", "怎么样", "如何");
 
     private static final List<String> KEYWORD_STOPWORDS = List.of(
-            "适合我的", "适合的", "合适的", "我喜欢的", "偏好的", "比较好的", "优秀的", "不错的", "好点的");
+            "适合我的", "适合的", "合适的", "我喜欢的", "偏好的", "比较好的", "优秀的", "不错的", "好点的",
+            "热门", "强势", "他的", "她的", "它的", "该校");
 
     private String cleanMajorKeyword(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }
         String cleaned = value.trim();
-        for (String prefix : List.of("适合我的", "适合的", "合适的", "我喜欢的", "偏好的",
+        for (String prefix : List.of("他的", "她的", "它的", "该校的", "适合我的", "适合的", "合适的", "我喜欢的", "偏好的",
                 "比较好的", "优秀的", "不错的", "好点的", "好的", "一些", "几个")) {
             if (cleaned.startsWith(prefix)) {
                 cleaned = cleaned.substring(prefix.length()).trim();
