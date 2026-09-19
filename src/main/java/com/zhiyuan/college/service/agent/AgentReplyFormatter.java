@@ -77,12 +77,12 @@ public class AgentReplyFormatter {
         sb.append(String.format("%d分%s类%s考生，参考位次约%s。", score, subject, province, userRank));
         sb.append("以下推荐基于本系统数据库真实录取数据，冲稳保三档已按录取概率分层。\n\n");
 
-        sb.append("## 二、冲稳保院校推荐\n\n");
+        sb.append(majorFirst ? "## 二、冲稳保专业推荐\n\n" : "## 二、冲稳保院校推荐\n\n");
         appendGroupTable(sb, "冲一冲", groups.get("rush"), score);
         appendGroupTable(sb, "稳一稳", groups.get("safe"), score);
         appendGroupTable(sb, "保一保", groups.get("guarantee"), score);
 
-        sb.append("## 三、院校+专业匹配\n");
+        sb.append(majorFirst ? "## 三、专业与开设院校\n" : "## 三、院校+专业匹配\n");
         int matchCount = 0;
         for (JsonNode item : topItems) {
             if (matchCount >= 3) break;
@@ -110,7 +110,11 @@ public class AgentReplyFormatter {
         sb.append("## 六、总结\n");
         sb.append(String.format("%d分%s类%s考生，建议按冲稳保梯度组合志愿，", score, subject, province));
         int total = topItems.size();
-        sb.append(String.format("本次共匹配%d所院校。请核对招生章程、科目限制与近三年位次后再填报。\n", total));
+        if (majorFirst) {
+            sb.append(String.format("本次围绕你选择的专业方向共给出%d条专业推荐。请核对招生章程、科目限制与近三年位次后再填报。\n", total));
+        } else {
+            sb.append(String.format("本次共匹配%d所院校。请核对招生章程、科目限制与近三年位次后再填报。\n", total));
+        }
 
         return sb.toString();
     }
