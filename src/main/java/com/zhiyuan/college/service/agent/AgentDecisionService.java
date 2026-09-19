@@ -162,8 +162,10 @@ public class AgentDecisionService {
         String schoolName = extractSchoolName(normalized);
         if (!containsOrdinalReference(normalized)
                 && schoolName != null
-                && containsAny(normalized, "查看", "看看")
-                && containsAny(normalized, "详情", "信息", "专业")) {
+                && containsAny(normalized, "查看", "看看", "查一下", "查查")
+                && !containsAny(normalized, "能不能上", "推荐", "概率")
+                && (containsAny(normalized, "详情", "信息", "专业")
+                    || containsAny(normalized, "查一下", "查查"))) {
             return new AgentDecision(
                     AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
                     "我先按学校名帮你查询\u201c%s\u201d的详情和可参考专业。".formatted(schoolName),
@@ -216,7 +218,7 @@ public class AgentDecisionService {
         // --- #8: recommendSchools (unchanged) ---
         if (containsAny(normalized, "推荐学校", "学校推荐", "推荐院校", "院校推荐", "学校怎么报",
                 "推荐志愿", "志愿推荐", "推荐大学", "大学推荐", "帮我报志愿", "推荐一下志愿",
-                "推荐几所", "几所学校", "几所大学") ||
+                "推荐几所", "几所学校", "几所大学", "能上什么学校", "能上哪些大学", "能上哪些") ||
                 (containsAny(normalized, "冲稳保") && containsAny(normalized, "志愿", "方案", "推荐", "浓度", "梯度"))) {
             return new AgentDecision(AgentToolNames.RECOMMEND_SCHOOLS, "我先基于你当前画像给你生成学校推荐。");
         }
@@ -228,7 +230,7 @@ public class AgentDecisionService {
                 "我的报考信息", "报考信息是什么", "我的报名信息",
                 "我是什么科类", "我的科类", "我的分数是多少", "我的分数",
                 "我是哪个省份", "我的省份", "我的考生信息")
-                && !containsAny(normalized, "修改", "更新", "编辑", "完善", "设置")) {
+                && !containsAny(normalized, "修改", "更新", "编辑", "完善", "设置", "能上", "能报")) {
             return new AgentDecision(AgentToolNames.GET_USER_PROFILE, "我先帮你读取当前画像信息。");
         }
 
@@ -558,10 +560,14 @@ public class AgentDecisionService {
 
     private String extractMajorOverviewKeyword(String text) {
         Matcher matcher = MAJOR_OVERVIEW_PATTERN.matcher(text);
-        if (!matcher.find()) {
-            return null;
+        while (matcher.find()) {
+            String keyword = cleanMajorKeyword(matcher.group(1));
+            // 疑问词不是专业方向："什么专业好就业"应引导用户给方向，而不是查询"什么"专业。
+            if (keyword != null && !KEYWORD_INTERROGATIVES.contains(keyword)) {
+                return keyword;
+            }
         }
-        return cleanMajorKeyword(matcher.group(1));
+        return null;
     }
 
     private boolean isMajorOverviewRequest(String text, String majorKeyword) {
@@ -579,6 +585,9 @@ public class AgentDecisionService {
     }
 
     /** 去掉专业名前的形容词/修饰词，如"推荐好的计算机专业"→"计算机"。 */
+    private static final List<String> KEYWORD_INTERROGATIVES = List.of(
+            "什么", "哪个", "啥", "哪些", "怎么样", "如何");
+
     private static final List<String> KEYWORD_STOPWORDS = List.of(
             "适合我的", "适合的", "合适的", "我喜欢的", "偏好的", "比较好的", "优秀的", "不错的", "好点的");
 
