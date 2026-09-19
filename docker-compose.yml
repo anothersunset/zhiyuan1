@@ -116,6 +116,8 @@ services:
       # MySQL already initializes schema + seed data through docker-entrypoint-initdb.d.
       # Prevent Spring Boot from replaying the destructive schema.sql on every start.
       DB_SCHEMA_INIT_MODE: never
+      # "always" reconciles the running database to the seed registry on startup
+      DB_SEED_MODE: ${DB_SEED_MODE:-never}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}

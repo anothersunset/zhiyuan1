@@ -16,6 +16,10 @@ spring:
       mode: ${DB_SCHEMA_INIT_MODE:always}
       schema-locations: classpath:db/schema.sql
       continue-on-error: false
+app:
+  # always: 后端每次启动把运行库对齐到种子注册表 db/data.sql（幂等 INSERT IGNORE）
+  # never: 不重放（默认；空数据卷的首次初始化仍由 MySQL initdb 负责）
+  db-seed-mode: ${DB_SEED_MODE:never}
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

@@ -107,6 +107,7 @@
                 <directory>sql</directory>
                 <includes>
                     <include>schema.sql</include>
+                    <include>data.sql</include>
                 </includes>
                 <targetPath>db</targetPath>
             </resource>

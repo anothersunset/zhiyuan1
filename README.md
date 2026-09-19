@@ -349,6 +349,15 @@ docker compose logs --tail=200 backend
 - Swagger / OpenAPI 默认关闭，不应把 `/swagger-ui.html` 当作部署健康检查
 - `backend` 在 Compose 中固定使用 `DB_SCHEMA_INIT_MODE=never`，不会重复执行 `schema.sql`
 - `docker-entrypoint-initdb.d` 只在 MySQL 数据卷为空时运行；复用旧卷不会自动重放新增或修改后的 SQL
+
+### 向已运行环境补充/修改基础数据（单一注册表流程）
+
+`sql/data.sql` 是参考数据（院校、专业、录取线、一分一段、演示账号）的唯一注册表。补充数据只需两步：
+
+1. 编辑 `sql/data.sql`，以 `INSERT IGNORE INTO ...` 形式追加数据（唯一键相同的行会被跳过，不会覆盖运行库中的现有修改）；
+2. 在 `.env` 中设置 `DB_SEED_MODE=always` 后执行 `docker compose -p <项目名> up -d backend`（或 `docker compose restart backend`）。
+
+后端启动时会自动把运行库对齐到注册表；全新部署（空数据卷）通过 initdb 获得同一份文件，两个路径结果一致。schema 结构变更不走此流程，仍由 `schema.sql` 的幂等迁移负责。
 - `backend` 默认使用 `prod` profile，并在 MySQL、Redis 和 RocketMQ Broker 健康后启动
 - Compose 会先初始化 RocketMQ 持久化卷权限，再启动 NameServer 与 Broker
 - MySQL、Redis 和 RocketMQ 的宿主机端口只绑定 `127.0.0.1`，不需要向公网开放
