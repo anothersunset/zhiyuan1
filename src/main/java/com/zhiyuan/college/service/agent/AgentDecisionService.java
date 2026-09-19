@@ -203,6 +203,20 @@ public class AgentDecisionService {
             );
         }
 
+        // --- 校名优先：显式校名 + 专业/热门/推荐 → 该校详情（专业列表） ---
+        // "推荐湘潭大学热门专业"是"看该校的专业"，不是拿"湘潭大学热门"当专业关键词查库
+        // （2026-09 用户实测：关键词污染导致答非所问）。序号引用场景仍走 getSchoolDetail。
+        String mentionedSchoolForMajor = extractLongestSchoolName(normalized);
+        if (mentionedSchoolForMajor != null
+                && !containsOrdinalReference(normalized)
+                && containsAny(normalized, "推荐", "热门", "专业")) {
+            return new AgentDecision(
+                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
+                    "好的，我把%s的专业信息整理如下，热门方向已标注：".formatted(mentionedSchoolForMajor),
+                    Map.of("universityName", mentionedSchoolForMajor)
+            );
+        }
+
         // --- 专业介绍：必须先于推荐处理 ---
         // “XX专业怎么样 / 学什么 / 就业前景”是知识查询，不应被错误地变成
         // recommendMajors（后者会返回当前画像下的院校录取推荐）。
@@ -626,22 +640,6 @@ public class AgentDecisionService {
         return null;
     }
 
-    /** 取文本中**最长**的校名匹配："已按学校名查询 湖南师范大学 的详情"应得湖南师范大学，而非"已按学校"。 */
-    private String extractLongestSchoolName(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        Matcher matcher = SCHOOL_NAME_DETAIL_PATTERN.matcher(text);
-        String best = null;
-        while (matcher.find()) {
-            String found = matcher.group(1);
-            if (best == null || found.length() > best.length()) {
-                best = found;
-            }
-        }
-        return best;
-    }
-
     private boolean containsMajorOverviewCue(String text) {
         return containsAny(text,
                 "怎么样", "好不好", "前景", "就业", "学什么", "学习内容", "课程", "介绍", "发展方向", "就业方向", "适不适合学");
@@ -717,16 +715,61 @@ public class AgentDecisionService {
             return null;
         }
         Matcher matcher = SCHOOL_NAME_DETAIL_PATTERN.matcher(text);
-        if (matcher.find()) {
-            String matched = matcher.group(1).trim();
-            for (String prefix : List.of("帮我看看", "帮我查看", "帮我查查", "看看", "查看", "查查", "介绍一下")) {
-                if (matched.startsWith(prefix)) {
-                    matched = matched.substring(prefix.length()).trim();
-                }
+        String matched = null;
+        // 取**最长**匹配：优先命中真实校名（湘潭大学），而不是"推荐学校/按学校"这类动词+泛称组合
+        while (matcher.find()) {
+            String found = matcher.group(1).trim();
+            if (matched == null || found.length() > matched.length()) {
+                matched = found;
             }
-            return matched.isBlank() ? null : matched;
         }
-        return null;
+        if (matched == null) {
+            return null;
+        }
+        for (String prefix : List.of("帮我看看", "帮我查看", "帮我查查", "帮我查一下",
+                "看看", "查看", "查查", "查一下", "介绍一下")) {
+            if (matched.startsWith(prefix)) {
+                matched = matched.substring(prefix.length()).trim();
+            }
+        }
+        return matched.isBlank() || !isPlausibleSchoolName(matched) ? null : matched;
+    }
+
+    /**
+     * 校名可信度：剔除"动词/量词 + 学校后缀"的泛称组合
+     * （推荐大学 / 这几所大学 / 按学校……），这些不是具体校名。
+     */
+    private boolean isPlausibleSchoolName(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        String stem = name.replaceAll("(大学|学院|学校)$", "").trim();
+        if (stem.length() < 2) {
+            return false;
+        }
+        if (stem.contains("推荐") || stem.contains("报") || stem.contains("选")
+                || stem.contains("几所") || stem.contains("一所")) {
+            return false;
+        }
+        return !stem.startsWith("这") && !stem.startsWith("那") && !stem.startsWith("该")
+                && !stem.startsWith("某") && !stem.startsWith("按")
+                && !stem.startsWith("去") && !stem.startsWith("上") && !stem.startsWith("想");
+    }
+
+    /** 取文本中**最长**的校名匹配："已按学校名查询 湖南师范大学 的详情"应得湖南师范大学，而非"已按学校"。 */
+    private String extractLongestSchoolName(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        Matcher matcher = SCHOOL_NAME_DETAIL_PATTERN.matcher(text);
+        String best = null;
+        while (matcher.find()) {
+            String found = matcher.group(1).trim();
+            if (isPlausibleSchoolName(found) && (best == null || found.length() > best.length())) {
+                best = found;
+            }
+        }
+        return best;
     }
 
     private boolean containsOrdinalReference(String text) {
