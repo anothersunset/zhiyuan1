@@ -233,3 +233,4 @@
 - 活库重新核实：院校 1,902、专业 657、院校录取线 17,562、专业录取线 166,176（REAL 163,928 / SIMULATED 2,248），专业组投档线 804 均为 SIMULATED。校徽 2,890 个文件；当前测试为 289 项（0 失败、0 错误、1 跳过），意图词典日志显示 29 组。上述两项以当前结果取代审计清单中的 283/27。
 - 修复 `sql/schema.sql` 六处乱码 COMMENT，将 `.env.example` 的 `DB_SCHEMA_INIT_MODE` 改为 `never`，避免空卷首次初始化后重复执行 dump 式 schema。源码 ZIP 排除 `.env*` 实密钥、`tmp/`、备份和探测文件；JAR 内含 2,890 张校徽。
 - ZIP 的 SHA256 清单验证通过。从 ZIP 独立解压后，以全新 Compose 项目构建并运行，五个常驻服务 healthy，首页 HTTP 200、`testuser` 登录成功，轻量种子实测院校 80、专业 100、用户 7；验证后已关闭测试容器。此前一次测试因复用测试卷的旧密码失败，改用全新项目数据卷后通过。
+- 用户明确指出以 `zhiyuan6` 为最新项目。已核对 `zv6-backend` Compose 标签指向当前工作区的 `docker-compose.yml`、`docker-compose.override.yml` 和 `docker-compose.zhiyuan6.yml`，原先源码 ZIP 的默认种子口径不能复现完整演示数据。现从 `zv6-mysql` 仅导出六张公开参考表到 `sql/full-competition-data-20260923.sql`，用 `docker-compose.full-data.yml` 在全新空卷追加导入；不导出用户、方案、对话和 AI 密钥。运行说明增加完整数据部署命令。

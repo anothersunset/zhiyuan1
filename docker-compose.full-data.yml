@@ -1,0 +1,6 @@
+# Fresh-volume competition deployment using the zhiyuan6 public data snapshot.
+# Compose executes 01-schema, 02-data, 03-unique-keys, then this 04-full-data script.
+services:
+  mysql:
+    volumes:
+      - ./sql/full-competition-data-20260923.sql:/docker-entrypoint-initdb.d/04-full-competition-data.sql:ro
