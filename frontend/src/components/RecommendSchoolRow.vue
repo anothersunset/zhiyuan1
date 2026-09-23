@@ -3,7 +3,6 @@ import { computed } from "vue";
 import GkSchoolLogo from "./GkSchoolLogo.vue";
 import { normalizeItem, recommendationBasisLabel } from "../utils/recommendation";
 import { rankOfScore as modelRankOfScore, scoreOfRank } from "../utils/scoreModel";
-import { SCHOOLS } from "../utils/exploreData";
 
 const props = defineProps({
   item: { type: Object, required: true },
@@ -18,45 +17,16 @@ const emit = defineEmits(["add", "view-detail", "pick-majors"]);
 
 const model = computed(() => normalizeItem(props.item, props.strategy));
 
-/* ===== 与本地院校库匹配，取省份/类型/隶属/计划数 ===== */
-const seedOf = computed(() => {
-  if (model.value.universityId != null) return Math.abs(Number(model.value.universityId)) || 1;
-  const name = String(model.value.universityName || "");
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 9973;
-  return hash || 1;
-});
-const school = computed(() => SCHOOLS.find((s) => s.name === model.value.universityName) || null);
-const seed = computed(() => school.value?.id || seedOf.value);
-
-/* ===== 派生元数据（确定性合成） ===== */
+/* ===== 派生元数据（全部来自推荐项真实字段） ===== */
 const metaLine = computed(() => {
   const s = model.value;
   const parts = [
-    s.universityProvince || school.value?.province || "",
-    school.value?.type || "",
-    school.value?.nature || "公办",
-    school.value?.belong || ""
+    s.universityProvince || "",
+    s.universityTier || "",
+    ...(s.schoolTags || [])
   ].filter(Boolean);
-  parts.push(`硕士点 ${(seed.value * 3) % 40 + 8}/${(seed.value * 2) % 12 + 3}`);
-  parts.push(`保研率 ${(((seed.value * 7) % 160) + 80) / 10}%`);
-  const ruanke = s.is985
-    ? (seed.value % 30) + 3
-    : s.is211
-      ? (seed.value % 40) + 42
-      : s.isDoubleFirstClass
-        ? (seed.value % 40) + 88
-        : (seed.value % 60) + 130;
-  parts.push(`软科 ${ruanke}`);
   return parts.join(" · ");
 });
-const groupNo = computed(() => `第 ${(seed.value * 13) % 90 + 10} 组`);
-const schoolCode = computed(() => String(10000 + (seed.value * 57) % 90000));
-const subjectReq = computed(() => {
-  const n = seed.value % 3;
-  return n === 0 ? "不限" : n === 1 ? "物理+化学" : "物理+生物";
-});
-const fillableMajors = computed(() => school.value ? Math.min(school.value.majorCount, seed.value % 15 + 5) : seed.value % 12 + 4);
 
 /* ===== 概率徽章 / 推荐指数 ===== */
 const probability = computed(() => {
@@ -92,28 +62,28 @@ const resolvedUserScore = computed(() => {
   if (m.userRank != null) return scoreOfRank(Number(m.userRank));
   return null;
 });
+/* 历年数据：仅展示推荐项自带的当年真实录取数据，不再编造往年数字 */
 const years = computed(() => {
   const m = model.value;
-  const sd = seed.value;
-  const s26 = m.cutoffScore != null ? Number(m.cutoffScore) : 500 + sd * 5;
-  const s25 = s26 - (3 + (sd % 7));
-  const s24 = s25 - (4 + (sd % 6));
-  const plan26 = school.value?.planCount ?? 20 + (sd % 40);
-  const plan25 = plan26 - (sd % 3);
-  const plan24 = plan25 - (1 + (sd % 2));
-  return [26, 25, 24].map((y, i) => {
-    const score = [s26, s25, s24][i];
-    const plan = [plan26, plan25, plan24][i];
-    const minRank = y === 26 && m.minRank != null ? Number(m.minRank) : rankOfScore(score);
-    const eq = y === 26 ? score : score + (y === 25 ? sd % 4 : sd % 3);
-    const diff = resolvedUserScore.value != null ? eq - resolvedUserScore.value : null;
-    return { year: y, plan, score, minRank, eq, diff };
-  });
+  if (m.cutoffScore == null && m.minRank == null) return [];
+  const score = m.cutoffScore != null ? Number(m.cutoffScore) : null;
+  const minRank = m.minRank != null ? Number(m.minRank) : null;
+  const eq = resolvedUserScore.value != null && score != null ? score : null;
+  const diff = eq != null && resolvedUserScore.value != null ? eq - resolvedUserScore.value : null;
+  return [{
+    year: m.admissionYear || "最新",
+    plan: m.planCount != null ? Number(m.planCount) : null,
+    score,
+    minRank,
+    eq,
+    diff
+  }];
 });
 const rankCompare = computed(() => {
   const m = model.value;
   const user = props.userRank ?? m.userRank;
-  const min = years.value[0].minRank;
+  const first = years.value[0];
+  const min = first && first.minRank != null ? first.minRank : m.minRank != null ? Number(m.minRank) : null;
   if (user == null || min == null) return null;
   const lead = min - Number(user);
   if (lead > 0) return { text: `位次领先 ${lead.toLocaleString("zh-CN")} 名`, ahead: true };
@@ -148,7 +118,6 @@ function handleDetail() {
         <div class="mnz-rlrow__titled">
           <h4 class="mnz-rlrow__name">
             {{ model.universityName }}
-            <i class="mnz-rlrow__group">[{{ groupNo }}]</i>
           </h4>
           <div class="mnz-rlrow__meta">
             <span v-if="model.majorName" class="mnz-rlrow__major">专业：{{ model.majorName }}</span>
@@ -168,7 +137,7 @@ function handleDetail() {
           <el-rate :model-value="stars" disabled allow-half size="small" />
         </div>
         <div class="mnz-rlrow__acts">
-          <button type="button" class="mnz-rlrow__majors" @click="emit('pick-majors', item, strategy)">可填专业({{ fillableMajors }})</button>
+          <button type="button" class="mnz-rlrow__majors" @click="emit('pick-majors', item, strategy)">可填专业</button>
           <button
             v-if="showAddAction"
             type="button"
@@ -184,13 +153,12 @@ function handleDetail() {
     </div>
 
     <div class="mnz-rlrow__data">
-      <div class="mnz-rlrow__plan">
-        <span>26年计划</span>
-        <strong>{{ years[0].plan }} 人</strong>
-        <em>较25年 {{ years[0].plan - years[1].plan >= 0 ? "+" : "" }}{{ years[0].plan - years[1].plan }}</em>
+      <div class="mnz-rlrow__plan" v-if="years.length">
+        <span>{{ years[0].year }}年计划</span>
+        <strong>{{ years[0].plan == null ? "—" : years[0].plan + " 人" }}</strong>
       </div>
 
-      <div class="mnz-rlrow__cols">
+      <div class="mnz-rlrow__cols" v-if="years.length">
         <div v-for="y in years" :key="y.year" class="mnz-rlrow__col">
           <span class="mnz-rlrow__col-year">{{ y.year }}年</span>
           <div class="mnz-rlrow__cell">
@@ -219,8 +187,6 @@ function handleDetail() {
       </div>
 
       <div class="mnz-rlrow__facts">
-        <span><label>院校代码</label>{{ schoolCode }}</span>
-        <span><label>选科要求</label>{{ subjectReq }}</span>
         <span v-if="rankCompare" class="mnz-rlrow__rankcmp" :class="{ 'is-ahead': rankCompare.ahead === true, 'is-behind': rankCompare.ahead === false }">
           {{ rankCompare.text }}
         </span>

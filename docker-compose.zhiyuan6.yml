@@ -1,0 +1,14 @@
+# zhiyuan6 新版本测试栈：独立容器名，避免与 zhiyuan3 冲突；测试完可整体 down -v
+services:
+  mysql:
+    container_name: zv6-mysql
+  redis:
+    container_name: zv6-redis
+  rocketmq-nameserver:
+    container_name: zv6-rocketmq-nameserver
+  rocketmq-init:
+    container_name: zv6-rocketmq-init
+  rocketmq-broker:
+    container_name: zv6-rocketmq-broker
+  backend:
+    container_name: zv6-backend

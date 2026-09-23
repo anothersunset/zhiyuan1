@@ -31,8 +31,10 @@ public class MajorController {
     }
 
     @GetMapping
-    public MajorListResponse list() {
-        return majorQueryService.listMajors();
+    public MajorListResponse list(
+            @RequestParam(value = "minOpen", required = false, defaultValue = "20") @Min(0) @Max(5000) int minOpen,
+            @RequestParam(value = "all", required = false, defaultValue = "false") boolean all) {
+        return majorQueryService.listMajors(minOpen, all);
     }
 
     @GetMapping("/{majorId}/schools")

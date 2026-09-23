@@ -4,12 +4,12 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
 import GkSchoolLogo from "../components/GkSchoolLogo.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import { profile, subjectType } from "../utils/examProfile";
 
 const router = useRouter();
 const schools = ref([]);
 const loading = ref(false);
+const loadError = ref("");
 const provinceFilter = ref("全部");
 const levelFilter = ref("all");
 const sortKey = ref("default");
@@ -36,18 +36,24 @@ async function fetchSchools() {
   loading.value = true;
   try {
     const examProvince = profile.province || "";
-    const base = `/api/universities?size=100&withDataOnly=true&examProvince=${encodeURIComponent(examProvince)}&subjectType=${encodeURIComponent(subjectType.value)}`;
-    const first = await (await fetch(base + "&page=1")).json();
+    const base = `/api/universities?size=1000&withDataOnly=true&examProvince=${encodeURIComponent(examProvince)}&subjectType=${encodeURIComponent(subjectType.value)}`;
+    /* L-20260921 扫描修复：去掉写死的 3 页上限（数据>3000 所会静默丢尾部），并补 resp.ok 检查 */
+    const firstResp = await fetch(base + "&page=1");
+    if (!firstResp.ok) throw new Error(`HTTP ${firstResp.status}`);
+    const first = await firstResp.json();
     const total = Number(first.total || 0);
-    const pages = Math.max(1, Math.ceil(total / 100));
+    const pages = Math.max(1, Math.ceil(total / 1000));
     const all = [...(first.items || [])];
-    for (let p = 2; p <= Math.min(pages, 15); p++) {
-      const pageData = await (await fetch(base + `&page=${p}`)).json();
+    for (let p = 2; p <= pages; p++) {
+      const pageResp = await fetch(base + `&page=${p}`);
+      if (!pageResp.ok) throw new Error(`HTTP ${pageResp.status}`);
+      const pageData = await pageResp.json();
       all.push(...(pageData.items || []));
     }
     schools.value = all;
   } catch (ex) {
     console.error("加载院校失败", ex);
+    loadError.value = String(ex?.message || ex);
   } finally {
     loading.value = false;
   }
@@ -175,11 +181,12 @@ function askPlan(school) {
               </div>
               <button class="gk-school__action" type="button" @click="askPlan(school)">查看计划 &gt;</button>
             </li>
-            <li v-if="!filtered.length" class="gk-school__empty">没有符合条件的院校，试试放宽筛选条件</li>
+            <li v-if="loadError" class="gk-school__empty">院校加载失败：{{ loadError }}（请刷新重试）</li>
+            <li v-else-if="!filtered.length" class="gk-school__empty">没有符合条件的院校，试试放宽筛选条件</li>
           </ul>
         </section>
 
-        <GkSidePanel />
+
       </div>
     </main>
   </div>

@@ -680,7 +680,11 @@ class RecommendationControllerTest {
         Assertions.assertFalse(first.get("is985").asBoolean());
         Assertions.assertFalse(first.get("is211").asBoolean());
         Assertions.assertFalse(first.get("isDoubleFirstClass").asBoolean());
-        Assertions.assertEquals(0, first.get("schoolTags").size());
+        // 普通院校无层级标签（985/双一流），但应带院校类型段（如"综合类"）
+        for (JsonNode tag : first.get("schoolTags")) {
+            Assertions.assertNotEquals("985", tag.asText());
+            Assertions.assertNotEquals("双一流", tag.asText());
+        }
     }
 
     @Test

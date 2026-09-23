@@ -5,7 +5,7 @@ spring:
     password: ${DB_PASSWORD:zhiyuan123}
   sql:
     init:
-      mode: ${DB_SCHEMA_INIT_MODE:always}
+      mode: ${DB_SCHEMA_INIT_MODE:never}
       schema-locations: classpath:db/schema.sql
       continue-on-error: false
 

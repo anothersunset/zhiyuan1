@@ -4,7 +4,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
 import GkSchoolLogo from "../components/GkSchoolLogo.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import {
   FIRST_SUBJECTS,
   SECOND_SUBJECTS,
@@ -62,14 +61,26 @@ async function fetchSchools() {
       examProvince: profile.province,
       subjectType: subjectType.value,
       withDataOnly: "true",
-      size: "100"
+      size: "1000",
+      page: "1"
     });
     if (score.value != null && Number(score.value) > 0) params.set("score", String(Number(score.value)));
     if (rank.value != null && Number(rank.value) > 0) params.set("userRank", String(Number(rank.value)));
-    const resp = await fetch(`/api/universities?${params.toString()}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    schools.value = (data.items || []).map((s) => {
+    /* L-20260921 扫描修复：旧版只拉一页 100 所，1,630 所候选静默丢 93%；改为按 total 翻页拉全量 */
+    const first = await fetch(`/api/universities?${params.toString()}`);
+    if (!first.ok) throw new Error(`HTTP ${first.status}`);
+    const firstData = await first.json();
+    const total = Number(firstData.total || 0);
+    const pages = Math.max(1, Math.ceil(total / 1000));
+    const all = [...(firstData.items || [])];
+    for (let p = 2; p <= pages; p++) {
+      params.set("page", String(p));
+      const pageResp = await fetch(`/api/universities?${params.toString()}`);
+      if (!pageResp.ok) throw new Error(`HTTP ${pageResp.status}`);
+      const pageData = await pageResp.json();
+      all.push(...(pageData.items || []));
+    }
+    schools.value = all.map((s) => {
       const prob = s.probability?.probability ?? null;
       const extremelyLow = isExtremelyLowProbability(s.probability);
       const backendStrategy = String(s.probability?.strategy || "").toUpperCase();
@@ -289,7 +300,8 @@ function goAgentPlan() {
               <span class="gk-choose__prob" :class="probClass(item)" :title="item.probHint">{{ item.prob }}</span>
               <button class="gk-school__action" type="button" @click.stop="openSchool(item)">院校详情 &gt;</button>
             </li>
-            <li v-if="!results.length" class="gk-school__empty">没有匹配的院校，试试放宽概率筛选</li>
+            <li v-if="loadError" class="gk-school__empty">院校列表加载失败：{{ loadError }}（请刷新重试）</li>
+            <li v-else-if="!results.length" class="gk-school__empty">没有匹配的院校，试试放宽概率筛选</li>
           </ul>
 
           <div v-else class="gk-choose__placeholder">
@@ -306,7 +318,6 @@ function goAgentPlan() {
           </div>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
   </div>

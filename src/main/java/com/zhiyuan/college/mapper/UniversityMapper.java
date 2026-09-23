@@ -141,4 +141,19 @@ public interface UniversityMapper extends BaseMapper<University> {
             ORDER BY school_type
             """)
     List<String> findDistinctSchoolTypes();
+
+    @Select("""
+            <script>
+            SELECT id, name, province, tier, nature,
+                   school_type AS schoolType,
+                   is_985 AS is985, is_211 AS is211,
+                   is_double_first_class AS isDoubleFirstClass,
+                   tags, soft_ranking AS softRanking
+            FROM university
+            WHERE soft_ranking IS NOT NULL
+              <if test="schoolType != null and schoolType != ''">AND school_type = #{schoolType}</if>
+            ORDER BY soft_ranking ASC, id ASC
+            </script>
+            """)
+    List<java.util.Map<String, Object>> findRanking(@Param("schoolType") String schoolType);
 }

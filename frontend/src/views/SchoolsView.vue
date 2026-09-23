@@ -4,7 +4,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
 import GkSchoolLogo from "../components/GkSchoolLogo.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import { isReady, profile, rank, score, subjectType, syncFromAuth } from "../utils/examProfile";
 import { isExtremelyLowProbability, probabilityDisplayValue } from "../utils/recommendation";
 import searchIcon from "../assets/gk_search_icon.png";
@@ -38,18 +37,22 @@ async function fetchSchools() {
       examProvince: profile.province,
       subjectType: subjectType.value,
       withDataOnly: "true",
-      size: "100"
+      size: "1000"
     });
     if (score.value != null) params.set("score", String(score.value));
     if (rank.value != null) params.set("userRank", String(rank.value));
     params.set("page", "1");
-    const first = await (await fetch(`/api/universities?${params.toString()}`)).json();
+    const firstResp = await fetch(`/api/universities?${params.toString()}`);
+    if (!firstResp.ok) throw new Error(`HTTP ${firstResp.status}`);
+    const first = await firstResp.json();
     const total = Number(first.total || 0);
-    const pages = Math.max(1, Math.ceil(total / 100));
+    const pages = Math.max(1, Math.ceil(total / 1000));
     const all = [...(first.items || [])];
-    for (let p = 2; p <= Math.min(pages, 15); p++) {
+    for (let p = 2; p <= pages; p++) {
       params.set("page", String(p));
-      const pageData = await (await fetch(`/api/universities?${params.toString()}`)).json();
+      const pageResp = await fetch(`/api/universities?${params.toString()}`);
+      if (!pageResp.ok) throw new Error(`HTTP ${pageResp.status}`);
+      const pageData = await pageResp.json();
       all.push(...(pageData.items || []));
     }
     schools.value = all;
@@ -69,6 +72,7 @@ const SORT_OPTS = ["默认排序", "录取概率由高到低", "分数由高到�
 /* 专业筛选：真实专业目录（/api/majors）+ 开设院校集合（/api/majors/{id}/schools） */
 const majors = ref([]);
 const majorSchoolIds = ref(null);
+const majorFilterError = ref("");
 const MAJOR_OPTS = computed(() => ["不限", ...majors.value.map((m) => m.name)]);
 
 const provinceFilter = ref("不限");
@@ -90,6 +94,7 @@ async function loadMajors() {
 
 async function applyMajor(name) {
   majorFilter.value = name;
+  majorFilterError.value = "";
   if (name === "不限") {
     majorSchoolIds.value = null;
     return;
@@ -108,8 +113,10 @@ async function applyMajor(name) {
     if (rank.value != null) params.set("userRank", String(rank.value));
     const list = await (await fetch(`/api/majors/${major.id}/schools?${params.toString()}`)).json();
     majorSchoolIds.value = new Set((list || []).map((s) => s.universityId));
+    majorFilterError.value = "";
   } catch (e) {
-    majorSchoolIds.value = null;
+    // L-20260921 扫描：失败不得静默退化为"不过滤"；保留上一集合并给出可见提示
+    majorFilterError.value = "专业筛选加载失败，已暂停按该专业过滤（可重试或换个专业）";
   }
 }
 
@@ -384,7 +391,10 @@ function goProfile() {
                 <i class="gks-prob__gap">去设置高考信息 &gt;</i>
               </button>
             </li>
-            <li v-if="!filtered.length" class="gks-empty">没有符合条件的院校，试试放宽筛选条件</li>
+            <li v-if="loadError" class="gks-empty gks-empty--error">院校列表加载失败：{{ loadError }}（请刷新重试）</li>
+            <li v-else-if="majorFilterError" class="gks-empty gks-empty--error">{{ majorFilterError }}</li>
+            <li v-else-if="loading && !filtered.length" class="gks-empty">院校列表加载中…</li>
+            <li v-else-if="!filtered.length" class="gks-empty">没有符合条件的院校，试试放宽筛选条件</li>
           </ul>
 
           <!-- 数据来源与测算方法 -->
@@ -421,7 +431,7 @@ function goProfile() {
           </details>
         </section>
 
-        <GkSidePanel />
+
       </div>
     </main>
   </div>

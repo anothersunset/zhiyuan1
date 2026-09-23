@@ -35,8 +35,8 @@ public class MajorQueryService {
         this.probabilityService = probabilityService;
     }
 
-    /** 专业目录：32 个热门专业 + 各专业开设院校数。 */
-    public MajorListResponse listMajors() {
+    /** 专业目录：按开设院校数过滤冷门专业（默认 ≥20 所），all=true 返回全量目录。 */
+    public MajorListResponse listMajors(int minOpenSchools, boolean all) {
         List<Major> majors = majorMapper.findAllOrdered();
         Map<String, Integer> openCounts = new HashMap<>();
         for (Map<String, Object> row : majorAdmissionCutoffMapper.countOpenSchoolsByMajor()) {
@@ -49,6 +49,9 @@ public class MajorQueryService {
         List<MajorItemResponse> items = new ArrayList<>();
         for (Major m : majors) {
             Integer count = openCounts.getOrDefault(m.getName(), 0);
+            if (!all && count < minOpenSchools) {
+                continue;
+            }
             items.add(new MajorItemResponse(
                     m.getId(),
                     m.getName(),

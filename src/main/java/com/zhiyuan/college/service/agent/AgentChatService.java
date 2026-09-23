@@ -34,17 +34,20 @@ public class AgentChatService {
     private final AgentToolExecutor agentToolExecutor;
     private final ObjectMapper objectMapper;
     private final AgentReplyFormatter replyFormatter;
+    private final AgentFailureRewriteService failureRewriteService;
 
     public AgentChatService(AgentConversationService agentConversationService,
                             AgentDecisionService agentDecisionService,
                             AgentToolExecutor agentToolExecutor,
                             ObjectMapper objectMapper,
-                            AgentReplyFormatter replyFormatter) {
+                            AgentReplyFormatter replyFormatter,
+                            AgentFailureRewriteService failureRewriteService) {
         this.agentConversationService = agentConversationService;
         this.agentDecisionService = agentDecisionService;
         this.agentToolExecutor = agentToolExecutor;
         this.objectMapper = objectMapper;
         this.replyFormatter = replyFormatter;
+        this.failureRewriteService = failureRewriteService;
     }
 
     public AgentChatTurnResponse sendMessage(Long userId,
@@ -113,14 +116,8 @@ public class AgentChatService {
             generated.add(agentConversationService.toMessageResponse(toolResultMessage));
 
             AgentMessage assistantFinal = agentConversationService.appendMessage(
-                    userId,
-                    conversationId,
-                    AgentRoles.ASSISTANT,
-                    AgentMessageTypes.TEXT,
-                    replyFormatter.format(toolResult, currentUser),
-                    null,
-                    null
-            );
+                    userId, conversationId, AgentRoles.ASSISTANT, AgentMessageTypes.TEXT,
+                    finalTextForUser(content, decision, toolResult, currentUser), null, null);
             generated.add(agentConversationService.toMessageResponse(assistantFinal));
         } else {
             AgentMessage assistantReply = agentConversationService.appendMessage(
@@ -202,7 +199,7 @@ public class AgentChatService {
                     toolResult.getSummary(), toolResult.getToolName(), toolResult.getPayloadJson());
             sendToolResult(emitter, toolResult);
 
-            String finalText = replyFormatter.format(toolResult, currentUser);
+            String finalText = finalTextForUser(content, decision, toolResult, currentUser);
             // If the executor/LLM already streamed text (fallback advice with a live model),
             // finalText is the same content reformatted — re-streaming it would duplicate the
             // answer. Otherwise simulate GPT-style token streaming for the final text.
@@ -255,6 +252,48 @@ public class AgentChatService {
             }
         }
         return true;
+    }
+
+    /**
+     * 工具失败时的最终话术（产品指定设计，默认开）：
+     * 只读查询类工具硬失败（如学校未收录）→ 交给 LLM 用通用知识改写成有帮助的回复，
+     * 替代原来的红色报错；改写不可用/关闭时回落 replyFormatter 的既有话术。
+     * 成功结果与志愿单增/删/存类失败维持既有 formatter（后者涉及用户数据状态，须确定性引导）。
+     */
+    private String finalTextForUser(String userMessage, AgentDecision decision, AgentToolResult toolResult, UserAccount user) {
+        String fallbackText = replyFormatter.format(toolResult, user);
+        if (failureRewriteService.isRewritable(toolResult.getToolName()) && isFailurePayload(toolResult)) {
+            String rewritten = failureRewriteService.rewrite(
+                    userMessage,
+                    toolResult.getToolName(),
+                    toJson(decision.getToolArgs()),
+                    extractFailureField(toolResult, "errorMessage"));
+            if (rewritten != null && !rewritten.isBlank()) {
+                return rewritten;
+            }
+        }
+        return fallbackText;
+    }
+
+    private boolean isFailurePayload(AgentToolResult toolResult) {
+        try {
+            return !objectMapper.readTree(payloadOrEmpty(toolResult)).path("success").asBoolean(true);
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    private String extractFailureField(AgentToolResult toolResult, String field) {
+        try {
+            return objectMapper.readTree(payloadOrEmpty(toolResult)).path(field).asText("");
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private String payloadOrEmpty(AgentToolResult toolResult) {
+        return toolResult.getPayloadJson() == null || toolResult.getPayloadJson().isBlank()
+                ? "{}" : toolResult.getPayloadJson();
     }
 
     private void sendEvent(SseEmitter emitter, String eventName, Object data) {

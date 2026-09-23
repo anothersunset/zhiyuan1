@@ -4,7 +4,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
 import GkSchoolLogo from "../components/GkSchoolLogo.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import { isReady, profile, rank, score, subjectType, syncFromAuth } from "../utils/examProfile";
 import { isExtremelyLowProbability, probabilityDisplayValue } from "../utils/recommendation";
 
@@ -350,7 +349,6 @@ function scoreGapLine(detailValue) {
           </p>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
   </div>

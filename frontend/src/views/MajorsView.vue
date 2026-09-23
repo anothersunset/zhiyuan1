@@ -3,7 +3,6 @@ import { Search } from "@element-plus/icons-vue";
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 
 const router = useRouter();
 const majors = ref([]);
@@ -127,7 +126,6 @@ onMounted(async () => {
           </div>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
   </div>

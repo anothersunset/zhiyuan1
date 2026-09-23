@@ -3,7 +3,6 @@ import { computed, inject, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import RecommendationResult from "../components/RecommendationResult.vue";
 import { formatDateTime, sourceTypeLabel } from "../utils/recommendation";
 import { UI_TEXT } from "../utils/ui";
@@ -291,7 +290,6 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
 

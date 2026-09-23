@@ -1155,7 +1155,11 @@ onMounted(async () => {
                           </div>
                         </article>
                       </div>
-                      <div v-if="hasErrorPayload(tool)" class="gk-error">{{ tool.payload.errorMessage || tool.payload.errorCode }}</div>
+                      <!-- 工具失败：后续有 AI 补充解答时降为中性提示（不再爆红），无解答才显示红色错误 -->
+                      <div
+                        v-if="hasErrorPayload(tool)"
+                        :class="(group.assistant && group.assistant.length) ? 'gk-tool-miss' : 'gk-error'"
+                      >{{ (group.assistant && group.assistant.length) ? "系统数据未命中，已由 AI 结合通用知识补充解答" : (tool.payload.errorMessage || tool.payload.errorCode) }}</div>
                     </div>
                     <div v-for="(msg, mi) in group.assistant" :key="`m-${gi}-${mi}`" class="xz-answer">
                       <div :class="['gk-answer__body', { 'is-collapsed': isCollapsedAnswer(msg) }]">

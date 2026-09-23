@@ -4,7 +4,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
 import GkSchoolLogo from "../components/GkSchoolLogo.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import { profile, rank, subjectType } from "../utils/examProfile";
 import { isExtremelyLowProbability, probabilityDisplayValue } from "../utils/recommendation";
 import hotIcon from "../assets/gk_hot.png";
@@ -20,9 +19,43 @@ const TABS = [
   { key: "jobs", label: "相关就业" }
 ];
 
-/* 学科门类 → 典型就业方向（静态知识参考，非数据库字段） */
+/* 就业方向映射：按专业名关键词精确匹配（优先），未命中退回学科门类默认值。
+   关键词顺序即优先级，先具体后宽泛。 */
+const EMPLOY_KEYWORD_MAP = [
+  { keys: ["土木", "建筑", "城乡规划", "道路桥梁", "给排水", "智能建造"], jobs: ["结构设计", "施工管理", "造价咨询", "工程监理", "BIM 工程师"] },
+  { keys: ["计算机", "软件", "智能科学", "数据科学", "大数据", "网络工程", "信息安全", "物联网", "数字媒体技术"], jobs: ["软件开发", "算法工程师", "系统架构", "数据分析", "网络安全"] },
+  { keys: ["人工智能", "机器人", "智能装备", "智能制造"], jobs: ["算法工程师", "机器人系统集成", "智能产线规划", "自动化调试", "AI 产品"] },
+  { keys: ["电子", "微电子", "集成电路", "芯片", "光电", "半导体"], jobs: ["硬件工程师", "芯片设计", "嵌入式开发", "IC 验证", "半导体工艺"] },
+  { keys: ["通信", "信息工程", "广播电视"], jobs: ["通信工程师", "网络优化", "射频工程师", "运营商网络岗", "物联网开发"] },
+  { keys: ["自动化", "电气", "轨道交通信号", "能源与动力", "能源工程", "电力"], jobs: ["电气工程师", "电力系统运行", "自动化调试", "新能源开发", "设备管理"] },
+  { keys: ["机械", "车辆", "过程装备", "材料成型"], jobs: ["机械设计", "工艺工程师", "汽车工程", "设备运维", "质量工程师"] },
+  { keys: ["水利", "水文", "港口", "航运", "船舶", "交通", "运输"], jobs: ["水利工程师", "航运管理", "交通规划", "港口物流", "项目管理"] },
+  { keys: ["测绘", "地质", "采矿", "石油", "矿业", "冶金"], jobs: ["测绘工程师", "地质勘察", "矿业工程", "油气田开发", "安全工程师"] },
+  { keys: ["环境", "安全工程", "环保", "资源循环"], jobs: ["环保工程师", "安全评价", "环境监测", "水处理", "EHS 管理"] },
+  { keys: ["化学", "化工", "制药", "材料", "高分子", "纺织", "轻工", "食品"], jobs: ["研发工程师", "工艺工程师", "质量检验", "生产管理", "技术支持"] },
+  { keys: ["生物", "生物医学", "生物工程"], jobs: ["生物研发", "医药代表", "实验技术员", "医疗器械", "质检分析"] },
+  { keys: ["农学", "园艺", "植物", "植物生产", "种子", "植保"], jobs: ["农业技术", "种业研发", "园林园艺", "农资管理", "现代农业创业"] },
+  { keys: ["动物", "畜牧", "兽医", "水产"], jobs: ["宠物医师", "养殖技术", "动物防疫", "饲料研发", "水产技术"] },
+  { keys: ["临床", "医学影像", "麻醉", "口腔", "中医", "儿科", "精神医学"], jobs: ["临床医师", "医学影像技师", "公共卫生", "医学研究", "医院管理"] },
+  { keys: ["护理", "助产"], jobs: ["临床护理", "护理管理", "社区护理", "老年照护", "医美机构"] },
+  { keys: ["药学", "药物", "药事"], jobs: ["医药研发", "药品注册", "药房执业", "医药代表", "质量控制"] },
+  { keys: ["公共卫生", "预防", "食品卫生", "健康管理"], jobs: ["疾控中心", "卫生监督", "健康管理机构", "食品检验", "卫生统计"] },
+  { keys: ["法医", "公安技术", "侦查", "治安"], jobs: ["公安机关", "司法鉴定", "安全防范", "检察辅助", "应急管理"] },
+  { keys: ["法学", "法律", "知识产权", "监狱", "政治学", "社会工作", "思政"], jobs: ["法律实务", "法务合规", "公务员", "知识产权代理", "社会工作"] },
+  { keys: ["教育", "师范", "体育", "运动"], jobs: ["学校教师", "教育培训", "教育管理", "体育教练", "课程研发"] },
+  { keys: ["中国语言", "汉语言", "新闻", "传播", "广告", "编辑", "网络与新媒体"], jobs: ["内容运营", "编辑记者", "文案策划", "新媒体运营", "品牌公关"] },
+  { keys: ["外语", "英语", "翻译", "日语", "法语", "德语", "商务英语"], jobs: ["翻译", "外贸业务", "涉外文秘", "跨境运营", "语言培训"] },
+  { keys: ["历史", "考古", "文物", "哲学", "逻辑", "宗教"], jobs: ["文博考古", "教育教学", "出版编辑", "文化研究", "公务员"] },
+  { keys: ["数学", "物理", "化学", "生物科学", "天文", "地理", "地质学", "统计", "心理学"], jobs: ["科研院所", "数据分析师", "中学教师", "考研深造", "量化分析"] },
+  { keys: ["经济", "金融", "财政", "税收", "保险", "投资", "精算"], jobs: ["金融分析", "银行从业", "证券投资", "保险精算", "财政税务"] },
+  { keys: ["管理", "工商", "会计", "审计", "财务", "人力资源", "市场营销", "电子商务", "物流", "旅游", "酒店", "会展"], jobs: ["企业管理", "市场营销", "财务会计", "人力资源", "供应链管理"] },
+  { keys: ["图书", "档案", "信息管理", "情报"], jobs: ["图书档案", "信息管理", "数据分析", "行政文秘", "知识管理"] },
+  { keys: ["音乐", "舞蹈", "表演", "戏剧", "影视", "播音", "美术", "设计", "艺术", "书法", "动画", "漫画", "陶瓷", "工艺"], jobs: ["艺术设计", "教育培训", "影视传媒", "自由创作", "文化机构"] },
+  { keys: ["建筑学", "风景园林", "城乡"], jobs: ["建筑设计", "城市规划", "景观设计", "室内设计", "地产开发"] }
+];
+
 const EMPLOY_MAP = {
-  工学: ["软件开发", "算法工程师", "硬件工程师", "智能制造", "通信工程"],
+  工学: ["工程技术人员", "研发工程师", "生产管理", "质量工程", "技术支持"],
   理学: ["科研院所", "数据分析", "教师", "考研深造", "交叉学科"],
   医学: ["临床医师", "医学科研", "公共卫生", "医院管理", "医药研发"],
   文学: ["编辑记者", "文案策划", "教师", "翻译", "内容运营"],
@@ -30,8 +63,23 @@ const EMPLOY_MAP = {
   经济学: ["经济分析", "金融顾问", "数据分析师", "银行从业"],
   管理学: ["企业管理", "市场营销", "人力资源", "财务分析"],
   教育学: ["学校教师", "教育管理", "课程研发", "教育咨询"],
-  历史学: ["文博考古", "历史教师", "档案管理", "文化研究"]
+  历史学: ["文博考古", "历史教师", "档案管理", "文化研究"],
+  农学: ["农业技术", "种业研发", "园林园艺", "现代农业", "农资管理"],
+  艺术学: ["艺术设计", "教育培训", "影视传媒", "自由创作", "文化机构"],
+  军事学: ["军队院校任职", "国防科研", "军工单位", "应急管理", "公务员"],
+  专科: ["技术技能岗", "产线技术员", "企业运营", "销售与客服", "自主创业"]
 };
+
+function employTagsOf(major) {
+  if (!major) return ["国企央企", "公务员", "科研院所", "自主创业"];
+  const name = major.name || "";
+  for (const group of EMPLOY_KEYWORD_MAP) {
+    if (group.keys.some((k) => name.includes(k))) {
+      return group.jobs;
+    }
+  }
+  return EMPLOY_MAP[major.category] || ["国企央企", "公务员", "科研院所", "自主创业"];
+}
 
 const SORTS = ["默认排序", "分数排序"];
 const SUBJECT_SCOPES = ["全部科类", "物理类", "历史类"];
@@ -52,6 +100,12 @@ const major = ref(null);
 const offeringSchools = ref([]);
 const loading = ref(true);
 
+/* 院校线参考的年份标签：取实际数据行里的最新年份，不再写死（L-05 同族：绑定值要能回答数据从哪来） */
+const cutoffYearLabel = computed(() => {
+  const years = [...new Set(offeringSchools.value.map((s) => s.admissionYear).filter(Boolean))];
+  return years.length ? `${Math.max(...years)} 本科批` : "最新年份";
+});
+
 async function load(id) {
   loading.value = true;
   if (!majors.value.length) {
@@ -68,6 +122,19 @@ async function load(id) {
   major.value = isNumericId
     ? (majors.value.find((m) => String(m.id) === String(id)) || null)
     : (majors.value.find((m) => decodeURIComponent(String(id)) === m.name) || null);
+  // 默认列表已过滤冷门专业；未命中（直达冷门专业链接）时拉全量目录兜底
+  if (!major.value) {
+    try {
+      const res = await fetch("/api/majors?all=true");
+      const data = await res.json();
+      majors.value = data.majors || [];
+      major.value = isNumericId
+        ? (majors.value.find((m) => String(m.id) === String(id)) || null)
+        : (majors.value.find((m) => decodeURIComponent(String(id)) === m.name) || null);
+    } catch (e) {
+      console.error("加载全量专业目录失败", e);
+    }
+  }
   offeringSchools.value = [];
   if (major.value) {
     try {
@@ -197,12 +264,14 @@ function goMajor(m) {
 
 const relatedMajors = computed(() => {
   if (!major.value) return [];
+  // 同门类下按开设院校数降序 = 热门优先，避免推荐极冷门专业
   return majors.value
     .filter((m) => m.id !== major.value.id && m.category === major.value.category)
+    .sort((a, b) => (b.openSchoolCount || 0) - (a.openSchoolCount || 0))
     .slice(0, 6);
 });
 
-const employTags = computed(() => EMPLOY_MAP[major.value?.category] || ["国企央企", "公务员", "科研院所", "自主创业"]);
+const employTags = computed(() => employTagsOf(major.value));
 
 const scoreBands = computed(() =>
   filteredSchools.value.slice(0, 8).map((s) => ({ ...s, prob: probOf(s) }))
@@ -315,12 +384,12 @@ const scoreBands = computed(() =>
               </div>
               <el-dropdown trigger="click" popper-class="gks-drop" @command="(v) => (scope = v)">
                 <button type="button" class="gkd-fsel">
-                  <span>2025 本科批 {{ scope }}</span>
+                  <span>{{ cutoffYearLabel }} {{ scope }}</span>
                   <el-icon><ArrowDown /></el-icon>
                 </button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item v-for="sc in SUBJECT_SCOPES" :key="sc" :command="sc" :class="{ 'is-active': scope === sc }" class="gks-drop__opt">2025 本科批 {{ sc }}</el-dropdown-item>
+                    <el-dropdown-item v-for="sc in SUBJECT_SCOPES" :key="sc" :command="sc" :class="{ 'is-active': scope === sc }" class="gks-drop__opt">{{ cutoffYearLabel }} {{ sc }}</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -386,7 +455,7 @@ const scoreBands = computed(() =>
 
           <!-- 录取预测 -->
           <div v-else-if="activeTab === 'predict'" class="gkd-panel">
-            <h4 class="gkd-sub">{{ major.name }} · 院校线参考（2025 本科批）</h4>
+            <h4 class="gkd-sub">{{ major.name }} · 院校线参考（{{ cutoffYearLabel }}）</h4>
             <table class="gkd-table">
               <thead>
                 <tr><th>院校</th><th>最低分</th><th>最低位次</th><th>录取概率</th></tr>
@@ -440,7 +509,6 @@ const scoreBands = computed(() =>
               {{ m.name }}
             </button>
           </div>
-          <GkSidePanel />
         </aside>
       </div>
 

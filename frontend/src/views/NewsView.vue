@@ -3,7 +3,6 @@ import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { CaretRight } from "@element-plus/icons-vue";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import { NEWS_ARTICLES, NEWS_TAGS } from "../utils/newsData";
 
 const router = useRouter();
@@ -84,7 +83,6 @@ function tagCls(tag) {
           </div>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
   </div>

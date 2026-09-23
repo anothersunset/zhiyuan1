@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
+import java.util.List;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,6 +32,13 @@ public class UniversityController {
         this.universityQueryService = universityQueryService;
     }
 
+    /** 院校排行：软科中国大学排名（可溯源），schoolType 过滤（如 综合/理工/医药）。 */
+    @GetMapping("/ranking")
+    public List<com.zhiyuan.college.model.dto.UniversityRankingItemResponse> ranking(
+            @RequestParam(value = "schoolType", required = false) @Size(max = 30) String schoolType) {
+        return universityQueryService.ranking(schoolType);
+    }
+
     @GetMapping
     public UniversityListResponse list(@RequestParam(value = "examProvince", required = false) @Size(max = 20) String examProvince,
                                       @RequestParam(value = "subjectType", required = false) SubjectType subjectType,
@@ -43,7 +51,7 @@ public class UniversityController {
                                       @RequestParam(value = "userRank", required = false) @Positive Integer userRank,
                                       @RequestParam(value = "sort", required = false) String sort,
                                       @RequestParam(value = "page", required = false, defaultValue = "1") @Min(1) int page,
-                                      @RequestParam(value = "size", required = false, defaultValue = "20") @Min(1) @Max(100) int size,
+                                      @RequestParam(value = "size", required = false, defaultValue = "20") @Min(1) @Max(1000) int size,
                                       @RequestParam(value = "withDataOnly", required = false, defaultValue = "false") boolean withDataOnly,
                                       @RequestParam(value = "nature", required = false) @Size(max = 20) String nature,
                                       @RequestParam(value = "type", required = false) @Size(max = 30) String type,

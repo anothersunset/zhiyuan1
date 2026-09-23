@@ -9,11 +9,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -21,46 +20,72 @@ import org.springframework.stereotype.Service;
 public class AgentDecisionService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentDecisionService.class);
-    private static final Pattern RECOMMEND_MAJOR_AFTER_PATTERN = Pattern.compile("推荐(?:一下|几个|一些)?([\\p{IsHan}A-Za-z0-9]{2,12})(?:专业|方向)");
-    private static final Pattern RECOMMEND_MAJOR_BEFORE_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,12})(?:专业|方向).{0,8}推荐");
-    private static final Pattern DIGIT_SELECTION_PATTERN = Pattern.compile("第\\s*(\\d{1,2})\\s*(?:个|所|条|项)");
-    private static final Pattern SAVE_NAME_PATTERN = Pattern.compile("保存(?:为|成)?[《\u201c\\\"]?([^》\u201d\\n]{2,30})[》\u201d\\\"]?(?:方案)?");
-    private static final Pattern SCHOOL_NAME_DETAIL_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,20}(?:大学|学院|学校))");
-    private static final Pattern MAJOR_OVERVIEW_PATTERN = Pattern.compile(
-            "(?:^|[，。！？?]|想了解|了解一下|请介绍|介绍一下|关于|问问|看看|查一下|帮我看看|帮我介绍)([\\p{IsHan}A-Za-z0-9]{2,16})(?:专业|方向)"
-    );
 
-    /** 常见专业关键词：精确子串匹配优先于正则，避免"推荐好的计算机专业"捕获到"好的计算机"。 */
-    private static final List<String> MAJOR_KEYWORDS = List.of(
-            "计算机科学与技术", "软件工程", "电子信息工程",
-            "计算机", "软件", "网络", "信息安全", "法学", "护理",
-            "人工智能", "AI", "机器学习", "数据科学", "大数据",
-            "师范", "教育学", "汉语言", "数学", "物理",
-            "电子信息", "电气工程", "自动化", "通信",
-            "临床医学", "口腔医学", "中医学", "药学",
-            "金融", "会计", "经济学", "工商管理",
-            "机械", "土木", "建筑", "材料",
-            "新能源", "集成电路", "芯片", "半导体",
-            "医学"
-    );
+    /** 意图词表唯一运行时来源（阶段①：同义词外置 JSON）。 */
+    private final AgentIntentLexicon lexicon;
+    /** 阶段③：正则与词典都提取失败时，查专业目录兜底（唯一最长命中才采用）。 */
+    private final AgentMajorCatalogService majorCatalogService;
 
     private final AiChatClient aiChatClient;
     private final ObjectMapper objectMapper;
     private final AgentToolRegistry agentToolRegistry;
     private final boolean qwenEnabled;
+    private final boolean nativeToolCallingEnabled;
+    /** 校准语义路由（Jev 原理，默认关闭）：disabled() 实例等价于"本层不存在"。 */
+    private final SemanticRouterService semanticRouter;
 
+    /**
+     * 生产装配：qwenEnabled 控制 LLM 兜底层总开关；nativeToolCallingEnabled 决定
+     * LLM 决策走原生 function-calling 还是旧的"提示词约束输出 JSON"。
+     */
+    @Autowired
     public AgentDecisionService(AiChatClient aiChatClient,
                                 ObjectMapper objectMapper,
                                 AgentToolRegistry agentToolRegistry,
-                                @Value("${ai.qwen.enabled:true}") boolean qwenEnabled) {
+                                AgentIntentLexicon intentLexicon,
+                                AgentMajorCatalogService majorCatalogService,
+                                SemanticRouterService semanticRouter,
+                                @Value("${ai.qwen.enabled:true}") boolean qwenEnabled,
+                                @Value("${ai.agent.tool-calling.enabled:true}") boolean nativeToolCallingEnabled) {
         this.aiChatClient = aiChatClient;
         this.objectMapper = objectMapper;
         this.agentToolRegistry = agentToolRegistry;
+        this.lexicon = intentLexicon;
+        this.majorCatalogService = majorCatalogService;
+        this.semanticRouter = semanticRouter;
         this.qwenEnabled = qwenEnabled;
+        this.nativeToolCallingEnabled = nativeToolCallingEnabled;
+    }
+
+    /**
+     * 兼容既有测试装配：qwenEnabled=false 时 LLM 路径不可达，原生开关不起作用；
+     * 目录服务以空 mapper 构建（惰性加载失败即降级为空目录），语料测试行为与改造前一致；
+     * 校准路由以 disabled 实例注入（等价于旧版没有该层）。
+     */
+    AgentDecisionService(AiChatClient aiChatClient,
+                         ObjectMapper objectMapper,
+                         AgentToolRegistry agentToolRegistry,
+                         boolean qwenEnabled) {
+        this(aiChatClient, objectMapper, agentToolRegistry,
+                new AgentIntentLexicon(objectMapper), new AgentMajorCatalogService(null),
+                SemanticRouterService.disabled(), qwenEnabled, true);
     }
 
     public AgentDecision decide(String userMessage, List<AgentMessage> recentMessages, UserAccount user) {
-        AgentDecision localDecision = decideLocally(userMessage, recentMessages);
+        // 阶段②：单次状态构建（消息级派生 + 一遍窗口扫描），本地路由、守护闸门、
+        // LLM 提示词三处消费同一份派生事实。
+        AgentDialogState state = AgentDialogState.build(userMessage, recentMessages, user, lexicon, objectMapper);
+        if (!semanticRouter.shadowEnabled()) {
+            return decideCore(state, user);
+        }
+        // 影子模式（探针验证法）：主流程一字不变，仅旁路记录"校准路由会给什么"用于对账。
+        AgentDecision decision = decideCore(state, user);
+        semanticRouter.recordShadowComparison(state, buildUserPrompt(state), decision);
+        return decision;
+    }
+
+    private AgentDecision decideCore(AgentDialogState state, UserAccount user) {
+        AgentDecision localDecision = decideLocally(state);
         // Strong-intent keywords (recommend / profile / plan / delete / save / school
         // detail) are resolved locally with high precision. Let them short-circuit so
         // the tool actually runs instead of being bypassed by an LLM that prefers to
@@ -69,25 +94,43 @@ public class AgentDecisionService {
         if (localDecision != null) {
             return localDecision;
         }
+        // 校准路由（Jev 原理，默认关闭）：仅当高置信选中白名单业务工具才短路；
+        // 无意见/低置信/超时/异常一律原样回落到下方既有 LLM 路径——最坏情况等于没有这一层。
+        if (semanticRouter.routingActive()) {
+            AgentDecision routed = semanticRouter.decideIfConfident(state, buildUserPrompt(state));
+            if (routed != null) {
+                return guardDestructiveCalls(routed, state);
+            }
+        }
         if (!qwenEnabled) {
             return defaultReply();
+        }
+        if (nativeToolCallingEnabled) {
+            try {
+                AgentDecision nativeDecision = decideWithNativeTools(state, user);
+                return guardDestructiveCalls(nativeDecision, state);
+            } catch (Exception ex) {
+                // 原生通道失败（网络、上游不支持 tools、非 OpenAI 兼容网关）→ 降级回 JSON 模式
+                log.warn("Agent native tool-calling decision failed, fallback to JSON mode: {}", ex.getMessage());
+            }
         }
         try {
             String aiContent = aiChatClient.chat(
                     buildSystemPrompt(),
-                    buildUserPrompt(userMessage, recentMessages, user),
+                    buildUserPrompt(state),
                     0.1,
                     true
             );
-            JsonNode root = objectMapper.readTree(aiContent);
+            JsonNode root = objectMapper.readTree(stripCodeFence(aiContent));
             String action = root.path("action").asText("").trim();
             String reply = root.path("reply").asText("").trim();
             Map<String, Object> toolArgs = readToolArgs(root.path("toolArgs"));
-            if (AgentToolNames.REPLY.equals(action)) {
+            // 模型缺 action 但 reply 有内容（澄清反问）时按直接回复处理，不丢弃有效回复
+            if (action.isBlank() || AgentToolNames.REPLY.equals(action)) {
                 return new AgentDecision(AgentToolNames.REPLY, reply.isBlank() ? DEFAULT_REPLY_TEXT : reply);
             }
             if (agentToolRegistry.supports(action)) {
-                return new AgentDecision(action, reply, toolArgs);
+                return guardDestructiveCalls(new AgentDecision(action, reply, toolArgs), state);
             }
         } catch (Exception ex) {
             log.warn("Agent AI decision failed, fallback to local planner: {}", ex.getMessage());
@@ -102,252 +145,142 @@ public class AgentDecisionService {
         return new AgentDecision(AgentToolNames.REPLY, DEFAULT_REPLY_TEXT);
     }
 
-    private AgentDecision decideLocally(String userMessage, List<AgentMessage> recentMessages) {
-        String normalized = userMessage == null ? "" : userMessage.trim();
-
-        // --- #1: removePlanItem 确认删除 (unchanged) ---
-        if (containsAny(normalized, "确认删除", "确定删除")) {
-            int selectionIndex = extractSelectionIndex(normalized);
-            if (hasPendingDeleteConfirmation(recentMessages, selectionIndex)) {
-                return new AgentDecision(
-                        AgentToolNames.REMOVE_PLAN_ITEM,
-                        "我现在删除当前志愿单中的第 %s 个结果。".formatted(selectionIndex),
-                        Map.of("selectionIndex", selectionIndex)
-                );
+    /**
+     * 模糊语义兜底的原生 tool-calling 路径：工具规格由 AgentToolRegistry 转成
+     * OpenAI function-calling 声明直连 DeepSeek 的 tools 参数，模型原生选择工具与参数
+     * （替代旧的"提示词约束输出 JSON"）；实时状态快照与历史压缩仍由 buildUserPrompt 注入。
+     */
+    private AgentDecision decideWithNativeTools(AgentDialogState state, UserAccount user) {
+        AiChatClient.NativeToolCall call = aiChatClient.chatWithTools(
+                buildNativeToolSystemPrompt(),
+                buildUserPrompt(state),
+                0.1,
+                agentToolRegistry.getOpenAiToolDefinitions());
+        String content = call.content() == null ? "" : call.content().trim();
+        if (!call.isToolCall()) {
+            // 模型未选任何工具（含 reply）：按直接回复处理
+            return new AgentDecision(AgentToolNames.REPLY, content.isBlank() ? DEFAULT_REPLY_TEXT : content);
+        }
+        String action = call.toolName().trim();
+        Map<String, Object> toolArgs = parseArgumentsJson(call.argumentsJson());
+        if (AgentToolNames.REPLY.equals(action)) {
+            String reply = toolArgs.get("reply") == null ? "" : String.valueOf(toolArgs.get("reply")).trim();
+            if (reply.isBlank()) {
+                // 部分模型把回复放进 content 而非参数，兼容取用
+                reply = content;
             }
-            return new AgentDecision(AgentToolNames.REPLY, "我没有检测到最近一条待确认的删除请求，请先明确告诉我要删除哪一项，再按提示确认。");
+            return new AgentDecision(AgentToolNames.REPLY, reply.isBlank() ? DEFAULT_REPLY_TEXT : reply);
         }
-
-        // --- P1 #2: 删除提示路由收紧 ---
-        // 要求 "删除/移除" + "志愿/方案" + ("当前" 或 序号引用)
-        // 排除过去时陈述，避免"我刚把第3条志愿删除了"误触发
-        if (containsAny(normalized, "删除", "移除", "删掉")
-                && containsAny(normalized, "志愿", "方案")
-                && (containsOrdinalReference(normalized) || containsAny(normalized, "当前"))
-                && !containsAny(normalized, "刚删除", "刚移除", "已经删除", "已经移除",
-                                "删掉了", "移除了", "刚把", "已经把")) {
-            int selectionIndex = extractSelectionIndex(normalized);
-            return new AgentDecision(
-                    AgentToolNames.REPLY,
-                    "删除是敏感操作。若确认删除当前志愿单中的第 %s 个结果，请回复\u201c确认删除第%s个\u201d。".formatted(selectionIndex, selectionIndex)
-            );
+        if (!agentToolRegistry.supports(action)) {
+            log.warn("Agent LLM selected unknown tool '{}', fallback to default reply", action);
+            return defaultReply();
         }
+        // 工具调用的一句说明放 content；模型未给时用与本地规划器同款的确定性话术兜底
+        String reply = content.isBlank() ? AgentRoutingPreambles.forTool(action, toolArgs) : content;
+        return new AgentDecision(action, reply, toolArgs);
+    }
 
-        // --- #3: savePlan (unchanged) ---
-        if (containsAny(normalized, "保存方案", "保存当前方案", "命名保存", "改名保存", "保存为", "另存为")) {
-            String planName = extractPlanName(normalized);
-            if (planName == null || planName.isBlank()) {
-                return new AgentDecision(AgentToolNames.REPLY, "请直接告诉我方案名，例如：保存为\u201c冲稳保方案\u201d。");
+    /** 模型偶发用 ```json 围栏包裹输出：剥掉围栏再解析（剥后仍非法则走既有降级路径）。 */
+    private String stripCodeFence(String content) {
+        if (content == null) {
+            return null;
+        }
+        String text = content.trim();
+        if (text.startsWith("```")) {
+            int firstNewline = text.indexOf('\n');
+            int lastFence = text.lastIndexOf("```");
+            if (firstNewline > 0 && lastFence > firstNewline) {
+                text = text.substring(firstNewline + 1, lastFence).trim();
             }
-            return new AgentDecision(
-                    AgentToolNames.SAVE_PLAN,
-                    "我现在把当前志愿单保存为《%s》。".formatted(planName),
-                    Map.of("planName", planName)
-            );
         }
+        return text;
+    }
 
-        // --- #4: addPlanItem (unchanged) ---
-        if (containsAny(normalized, "加入志愿单", "加入当前方案", "加入方案", "加到志愿单", "加进志愿单")) {
-            int selectionIndex = extractSelectionIndex(normalized);
-            return new AgentDecision(
-                    AgentToolNames.ADD_PLAN_ITEM,
-                    "我先把最近推荐里的第 %s 个结果加入当前志愿单。".formatted(selectionIndex),
-                    Map.of("selectionIndex", selectionIndex)
-            );
+    private Map<String, Object> parseArgumentsJson(String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return Collections.emptyMap();
         }
-
-        // --- P0 #5: getSchoolDetailByName 收紧 ---
-        // 要求 "查看/看看" + 校名 + "详情/信息/专业" 三者同时出现
-        // 避免"看看能不能上浙大"（推荐意图）误命中
-        String schoolName = extractSchoolName(normalized);
-        if (!containsOrdinalReference(normalized)
-                && schoolName != null
-                && containsAny(normalized, "查看", "看看", "查一下", "查查")
-                && !containsAny(normalized, "能不能上", "推荐", "概率")
-                && (containsAny(normalized, "详情", "信息", "专业")
-                    || containsAny(normalized, "查一下", "查查"))) {
-            return new AgentDecision(
-                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
-                    "我先按学校名帮你查询\u201c%s\u201d的详情和可参考专业。".formatted(schoolName),
-                    Map.of("universityName", schoolName)
-            );
-        }
-
-        // --- P0 #6: getSchoolDetail 收紧 ---
-        // 要求 序号引用(第N个) + "详情/信息/专业" 组合，去掉泛词单独触发
-        // 避免"什么专业好就业"误命中 selectionIndex 默认1 导致答非所问
-        if (containsOrdinalReference(normalized)
-                && containsAny(normalized, "学校详情", "院校详情", "学校信息", "学校专业",
-                               "有哪些专业", "什么专业", "详情", "信息", "专业")) {
-            int selectionIndex = extractSelectionIndex(normalized);
-            return new AgentDecision(
-                    AgentToolNames.GET_SCHOOL_DETAIL,
-                    "我先帮你查看第 %s 个学校的详情和可参考专业。".formatted(selectionIndex),
-                    Map.of("selectionIndex", selectionIndex)
-            );
-        }
-
-        // --- 对话续槽（学校上下文）：用"他/它/该校"指代上文学校并问专业/详情 ---
-        // 例："你知道湖南师范大学吗" → "帮我推荐他的热门专业" 应继续路由到该校详情，
-        // 而不是把"他的热门"当成专业关键词查库（2026-09 用户实测答非所问）。
-        String lastMentionedSchool = findLastMentionedSchool(recentMessages);
-        if (lastMentionedSchool != null
-                && containsAny(normalized, "他的", "她的", "它的", "该校", "这所", "这所学校",
-                               "刚才那所", "刚才的学校", "刚才那个学校")
-                && containsAny(normalized, "专业", "详情", "信息")
-                && containsAny(normalized, "推荐", "热门", "介绍", "看看", "哪些", "怎么样")) {
-            return new AgentDecision(
-                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
-                    "好的，基于我们刚聊到的%s，我把它的专业信息整理如下：".formatted(lastMentionedSchool),
-                    Map.of("universityName", lastMentionedSchool)
-            );
-        }
-
-        // --- 校名优先：显式校名 + 专业/热门/推荐 → 该校详情（专业列表） ---
-        // "推荐湘潭大学热门专业"是"看该校的专业"，不是拿"湘潭大学热门"当专业关键词查库
-        // （2026-09 用户实测：关键词污染导致答非所问）。序号引用场景仍走 getSchoolDetail。
-        // 先剥离前导动词再匹配，避免正则从"推"起步吃出"推荐湘潭大学"。
-        String strippedForSchool = normalized
-                .replace("帮我", "▌").replace("请帮我", "▌").replace("请", "▌")
-                .replace("给我", "▌").replace("推荐", "▌").replace("介绍一下", "▌")
-                .replace("介绍", "▌").replace("看看", "▌").replace("查一下", "▌")
-                .replace("查询", "▌").replace("查查", "▌");
-        String mentionedSchoolForMajor = extractLongestSchoolName(strippedForSchool);
-        if (mentionedSchoolForMajor != null
-                && !containsOrdinalReference(normalized)
-                && containsAny(normalized, "推荐", "热门", "专业")) {
-            return new AgentDecision(
-                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
-                    "好的，我把%s的专业信息整理如下，热门方向已标注：".formatted(mentionedSchoolForMajor),
-                    Map.of("universityName", mentionedSchoolForMajor)
-            );
-        }
-
-        // --- 专业介绍：必须先于推荐处理 ---
-        // “XX专业怎么样 / 学什么 / 就业前景”是知识查询，不应被错误地变成
-        // recommendMajors（后者会返回当前画像下的院校录取推荐）。
-        String majorKeyword = extractMajorKeyword(normalized);
-        if (majorKeyword == null && containsMajorOverviewCue(normalized)) {
-            majorKeyword = extractMajorOverviewKeyword(normalized);
-        }
-        if (isMajorOverviewRequest(normalized, majorKeyword)) {
-            return new AgentDecision(
-                    AgentToolNames.GET_MAJOR_OVERVIEW,
-                    "我先查询“%s”的学习内容、就业方向和报考提醒。".formatted(majorKeyword),
-                    Map.of("majorKeyword", majorKeyword)
-            );
-        }
-
-        // --- P1 #7: recommendMajors（关键词扩展见 extractMajorKeyword） ---
-        if (containsAny(normalized, "推荐") && containsAny(normalized, "专业", "方向") && majorKeyword == null) {
-            return new AgentDecision(AgentToolNames.REPLY,
-                    "想看哪一类专业？告诉我方向（例如：计算机、电子信息、临床医学），我再基于你的画像生成专业推荐。");
-        }
-        if (containsAny(normalized, "推荐") && majorKeyword != null) {
-            return new AgentDecision(
-                    AgentToolNames.RECOMMEND_MAJORS,
-                    "我先基于你的画像和\u201c%s\u201d的兴趣给你生成专业推荐。".formatted(majorKeyword),
-                    Map.of("majorKeyword", majorKeyword)
-            );
-        }
-
-        // --- #8: recommendSchools (unchanged) ---
-        if (containsAny(normalized, "推荐学校", "学校推荐", "推荐院校", "院校推荐", "学校怎么报",
-                "推荐志愿", "志愿推荐", "推荐大学", "大学推荐", "帮我报志愿", "推荐一下志愿",
-                "推荐几所", "几所学校", "几所大学", "能上什么学校", "能上哪些大学", "能上哪些") ||
-                (containsAny(normalized, "冲稳保") && containsAny(normalized, "志愿", "方案", "推荐", "浓度", "梯度"))) {
-            return new AgentDecision(AgentToolNames.RECOMMEND_SCHOOLS, "我先基于你当前画像给你生成学校推荐。");
-        }
-
-        // --- P0 #9: getUserProfile 路由收紧 ---
-        // 去掉 "分数/省份/科类" 等高频泛词，改为明确问询短语
-        // 避免 "我620分想去北京" "我是浙江考生" 等自然语言请求误命中
-        if (containsAny(normalized, "我的画像", "查看画像", "查看我的信息", "我的信息是什么", "我的信息有哪些",
-                "我的报考信息", "报考信息是什么", "我的报名信息",
-                "我是什么科类", "我的科类", "我的分数是多少", "我的分数",
-                "我是哪个省份", "我的省份", "我的考生信息")
-                && !containsAny(normalized, "修改", "更新", "编辑", "完善", "设置", "能上", "能报")) {
-            return new AgentDecision(AgentToolNames.GET_USER_PROFILE, "我先帮你读取当前画像信息。");
-        }
-
-        // --- #10: getCurrentPlan (unchanged) ---
-        // 必须含明确"查看/现有"语境，避免被"生成方案""冲稳保方案"等含"志愿/方案"的请求误触发
-        if (containsAny(normalized, "当前表", "当前单", "当前志愿", "当前方案", "我的志愿", "我的方案",
-                        "已有志愿", "已有方案", "看看志愿", "看看方案", "之前生成", "刚才生成",
-                        "志愿单里", "我的志愿单", "志愿单有什么", "志愿单有哪些") ||
-                (containsAny(normalized, "当前") && containsAny(normalized, "志愿", "方案"))) {
-            return new AgentDecision(AgentToolNames.GET_CURRENT_PLAN, "我先帮你查看当前志愿方案。");
-        }
-        // --- 对话续槽：上一轮助手主动追问"专业方向"，本轮短回复即填槽答案 ---
-        // 与"删除确认"同属任务型对话槽位：Agent 发起澄清后，下一轮按答案解释。
-        if (pendingMajorDirectionSlot(recentMessages)) {
-            String direction = extractMajorKeyword(normalized);
-            if (direction != null) {
-                return new AgentDecision(
-                        AgentToolNames.RECOMMEND_MAJORS,
-                        "好的，按“%s”方向基于你的画像生成专业推荐。".formatted(direction),
-                        Map.of("majorKeyword", direction)
-                );
+        try {
+            JsonNode node = objectMapper.readTree(argumentsJson);
+            if (!node.isObject()) {
+                return Collections.emptyMap();
             }
-            if (containsAny(normalized, "不知道", "随便", "都行", "没有", "不确定")) {
-                return new AgentDecision(AgentToolNames.REPLY, "那不如先看学校推荐？回复“帮我推荐学校”即可。");
-            }
-            return new AgentDecision(AgentToolNames.REPLY,
-                    "没听清专业方向。请回复一个方向，例如：计算机、电子信息、临床医学。");
+            return objectMapper.convertValue(node,
+                    objectMapper.getTypeFactory().constructMapType(LinkedHashMap.class, String.class, Object.class));
+        } catch (Exception ex) {
+            log.warn("Agent LLM tool arguments are not valid JSON: {}", argumentsJson);
+            return Collections.emptyMap();
         }
-        return null;
     }
 
     /**
-     * 对话续槽感知：最近一条助手消息是否是"专业方向追问"。
-     * 纯从最近消息窗口推导，与删除确认槽位同一模式，不引入额外存储。
+     * 删除是破坏性操作：无论模型多确信，没有「用户请求 → 助手确认提示」的两段上下文就不放行。
+     * 这是提示词约束之外的代码级闸门，对原生 tool-calling 与 JSON 模式同样生效——模糊语义
+     * 覆盖面扩大后，未确认的删除绝不能因模型自信而执行。
      */
-    private boolean pendingMajorDirectionSlot(List<AgentMessage> recentMessages) {
-        if (recentMessages == null || recentMessages.isEmpty()) {
-            return false;
+    private AgentDecision guardDestructiveCalls(AgentDecision decision, AgentDialogState state) {
+        if (!AgentToolNames.REMOVE_PLAN_ITEM.equals(decision.getAction())) {
+            return decision;
         }
-        for (int i = recentMessages.size() - 1; i >= 0; i--) {
-            AgentMessage message = recentMessages.get(i);
-            if (!AgentRoles.ASSISTANT.equals(message.getRole())
-                    || !AgentMessageTypes.TEXT.equals(message.getMessageType())) {
-                continue;
+        Object raw = decision.getToolArgs().get("selectionIndex");
+        // L-20260921 扫描：序号缺失时不得兜底编造"第 1 个"——那会引导用户确认删除一个
+        // 与其意图无关的条目。改为请用户明确序号（fail-closed）。
+        if (raw == null) {
+            return new AgentDecision(
+                    AgentToolNames.REPLY,
+                    "请告诉我要删除志愿表中的第几项（例如：删除第 1 个），我会先和你确认。"
+            );
+        }
+        int selectionIndex;
+        if (raw instanceof Number number) {
+            selectionIndex = number.intValue();
+        } else {
+            try {
+                selectionIndex = Integer.parseInt(String.valueOf(raw).trim());
+            } catch (Exception ignored) {
+                // 序号无法解析（如"abc"）：与缺失同样请用户指明，不编造"第 1 个"
+                return new AgentDecision(
+                        AgentToolNames.REPLY,
+                        "请告诉我要删除志愿表中的第几项（例如：删除第 1 个），我会先和你确认。"
+                );
             }
-            String content = safeContent(message);
-            return content.contains("告诉我方向") && content.contains("专业推荐");
         }
-        return false;
+        if (state.hasPendingDeleteConfirmation(selectionIndex)) {
+            return decision;
+        }
+        // Noul 语义确认（默认关闭）：只有 provider 以高置信明确确认才放行转述式删除；
+        // 无意见/低置信/异常一律 fail-closed，与旧路径一样要求用户显式确认。
+        if (semanticRouter.deleteConfirmEnabled()
+                && semanticRouter.deletionConfirmedBySemantics(state, selectionIndex)) {
+            return decision;
+        }
+        return new AgentDecision(
+                AgentToolNames.REPLY,
+                "删除是敏感操作。若确认删除当前志愿单中的第 %s 个结果，请回复\u201c确认删除第%s个\u201d。"
+                        .formatted(selectionIndex, selectionIndex)
+        );
     }
 
-    private boolean hasPendingDeleteConfirmation(List<AgentMessage> recentMessages, int selectionIndex) {
-        if (recentMessages == null || recentMessages.isEmpty()) {
-            return false;
-        }
+    /**
+     * 原生 tool-calling 模式的系统提示词：工具清单与参数 Schema 由 API 的 tools 声明承载，
+     * 提示词只保留角色设定与路由约束（与 buildSystemPrompt 的 JSON 模式文档解耦）。
+     */
+    private String buildNativeToolSystemPrompt() {
+        return """
+                你是高考志愿助手的受控编排器。通过选择并调用工具完成用户请求；闲聊、澄清追问、引导补充信息或没有任何工具匹配时，调用 reply 工具直接回复。
 
-        int assistantPromptIndex = -1;
-        for (int i = recentMessages.size() - 1; i >= 0; i--) {
-            AgentMessage message = recentMessages.get(i);
-            if (!AgentRoles.ASSISTANT.equals(message.getRole())
-                    || !AgentMessageTypes.TEXT.equals(message.getMessageType())) {
-                continue;
-            }
-            String content = safeContent(message);
-            if (content.contains("确认删除第" + selectionIndex + "个")) {
-                assistantPromptIndex = i;
-                break;
-            }
-            return false;
-        }
+                调用业务工具时，在同一条消息的 content 里用一句话向用户说明你将做什么；调用 reply 时把给用户的完整回复放进 reply 参数。
 
-        if (assistantPromptIndex < 1) {
-            return false;
-        }
-
-        AgentMessage previousUserMessage = recentMessages.get(assistantPromptIndex - 1);
-        if (!AgentRoles.USER.equals(previousUserMessage.getRole())) {
-            return false;
-        }
-        String previousContent = safeContent(previousUserMessage);
-        return containsAny(previousContent, "删除", "移除") && containsAny(previousContent, "志愿", "方案");
+                关键路由约束（必须严格遵守）：
+                1. 推荐请求必须走工具：用户说"推荐学校""推荐专业""我想报XX""我想学XX"时，必须调用 recommendSchools 或 recommendMajors，不能只 reply 道歉。
+                2. 区分"生成方案"与"查看方案"："生成/做/来个方案"→ recommendSchools；"查看/看看当前方案"→ getCurrentPlan。
+                3. 用户描述自己的分数/省份/科类时不要调用 getUserProfile：除非用户明确在问"我的画像是什么""我的分数记录"。
+                4. "看看XX大学"在没明确详情请求时不要调 getSchoolDetailByName："看看能不能上XX"是推荐意图，应走 recommendSchools。
+                5. "XX专业怎么样"、"就业前景"、"学什么"、"课程介绍"等专业知识问题必须调用 getMajorOverview；只有明确要求"推荐专业/适合报什么专业"时才调用 recommendMajors。
+                6. 用户只要求查看画像时只调用 getUserProfile，不要额外调用推荐工具。
+                7. 结合"系统实时状态"选择工具：最近推荐不可用或为 0 项时，不要调用 addPlanItem/removePlanItem（应先 recommendSchools）；引用"第 N 个"时 N 不得超过最近推荐的项数。
+                8. removePlanItem 必须先经用户确认：没有明确的确认语境时，只能调用 reply 引导用户回复"确认删除第N个"。
+                """;
     }
 
     private String buildSystemPrompt() {
@@ -402,11 +335,12 @@ public class AgentDecisionService {
      *       只保留摘要与条数指针——执行层从消息库按需取用完整数据；</li>
      *   <li>两级历史压缩：窗口内较早的消息压成单行摘要，最近若干条保留原文（仍截断），
      *       同样的 token 预算容纳更多轮次；</li>
-     *   <li>系统实时状态快照：见 buildSystemSnapshot。</li>
+     *   <li>系统实时状态快照：由 AgentDialogState 单次构建提供。</li>
      * </ul>
      */
-    String buildUserPrompt(String userMessage, List<AgentMessage> recentMessages, UserAccount user) {
-        int total = recentMessages == null ? 0 : recentMessages.size();
+    String buildUserPrompt(AgentDialogState state) {
+        List<AgentMessage> recentMessages = state.recentMessages();
+        int total = recentMessages.size();
         int digestCount = Math.max(0, total - VERBATIM_HISTORY_MESSAGES);
         StringBuilder history = new StringBuilder();
         if (digestCount > 0) {
@@ -419,23 +353,19 @@ public class AgentDecisionService {
         for (AgentMessage message : recentMessages.subList(digestCount, total)) {
             history.append(renderRecent(message)).append('\n');
         }
-        Map<String, Object> profile = new LinkedHashMap<>();
-        profile.put("userId", user == null ? null : user.getId());
-        profile.put("username", user == null ? null : user.getUsername());
-        profile.put("score", user == null ? null : user.getScore());
-        profile.put("subjectType", user == null || user.getSubjectType() == null ? null : user.getSubjectType().name());
-        profile.put("examProvince", user == null ? null : user.getExamProvince());
-        return "用户画像: " + profile
-                + "\n系统实时状态:\n" + buildSystemSnapshot(recentMessages, user)
+        return "用户画像: " + state.profileMap()
+                + "\n系统实时状态:\n" + state.snapshotText()
                 + "\n最近消息:\n" + history
-                + "\n当前用户消息:\n" + userMessage;
+                + "\n当前用户消息:\n" + state.normalizedMessage();
+    }
+
+    /** 兼容入口：按消息列表直接构建状态并渲染（上下文装配契约测试走这里）。 */
+    String buildUserPrompt(String userMessage, List<AgentMessage> recentMessages, UserAccount user) {
+        return buildUserPrompt(AgentDialogState.build(userMessage, recentMessages, user, lexicon, objectMapper));
     }
 
     /** 常量：窗口内保留原文的最近消息条数；更早的消息压成摘要。 */
     private static final int VERBATIM_HISTORY_MESSAGES = 6;
-
-    /** 单条消息在提示词里的内容截断长度（防长 markdown 撑爆 token）。 */
-    private static final int MAX_RENDERED_CONTENT_CHARS = 240;
 
     /** 较早消息的单行摘要（脱载荷）。 */
     private String renderDigest(AgentMessage message) {
@@ -460,7 +390,7 @@ public class AgentDecisionService {
         }
         return "%s[%s]: %s%s".formatted(
                 message.getRole(), message.getMessageType(),
-                truncate(safeContent(message), MAX_RENDERED_CONTENT_CHARS), extra);
+                truncate(safeContent(message), AgentDialogState.MAX_RENDERED_CONTENT_CHARS), extra);
     }
 
     /** 从推荐载荷提取"条数 + 前几项名称"的摘要。 */
@@ -491,66 +421,6 @@ public class AgentDecisionService {
         return text.length() <= max ? text : text.substring(0, max) + "…";
     }
 
-    /**
-     * Real-time perception of the volunteer-service system for LLM intent decisions:
-     * profile completeness, whether the latest recommendation round is still
-     * referenceable (and how many items), and the last known draft-sheet state.
-     * Derived purely from the recent-message window and the user record, so no
-     * extra service calls are needed on the decision path.
-     */
-    private String buildSystemSnapshot(List<AgentMessage> recentMessages, UserAccount user) {
-        boolean profileComplete = user != null && user.getScore() != null
-                && user.getSubjectType() != null
-                && user.getExamProvince() != null && !user.getExamProvince().isBlank();
-        StringBuilder sb = new StringBuilder();
-        sb.append("- 用户画像：").append(profileComplete
-                ? "%s/%s/%s分（完整，可直接推荐）".formatted(
-                        user.getExamProvince(), user.getSubjectType().name(), user.getScore())
-                : "不完整（调用推荐类工具前需先引导完善）");
-
-        String recommendationStatus = "不可用（需先推荐才能引用“第 N 个”或加入志愿单）";
-        if (recentMessages != null) {
-            for (int i = recentMessages.size() - 1; i >= 0; i--) {
-                AgentMessage message = recentMessages.get(i);
-                if (!AgentMessageTypes.TOOL_RESULT.equals(message.getMessageType())
-                        || (!AgentToolNames.RECOMMEND_SCHOOLS.equals(message.getToolName())
-                            && !AgentToolNames.RECOMMEND_MAJORS.equals(message.getToolName()))
-                        || message.getPayloadJson() == null || message.getPayloadJson().isBlank()) {
-                    continue;
-                }
-                try {
-                    JsonNode topItems = objectMapper.readTree(message.getPayloadJson()).path("topItems");
-                    if (topItems.isArray()) {
-                        recommendationStatus = "可用（共 %d 项，可用“第 N 个”引用或加入志愿单）"
-                                .formatted(topItems.size());
-                    }
-                } catch (Exception ignored) {
-                    // keep default status
-                }
-                break;
-            }
-        }
-        sb.append("\n- 最近一轮推荐：").append(recommendationStatus);
-
-        String planHint = "暂无线索（可调用 getCurrentPlan 查询）";
-        if (recentMessages != null) {
-            for (int i = recentMessages.size() - 1; i >= 0; i--) {
-                AgentMessage message = recentMessages.get(i);
-                if (AgentMessageTypes.TOOL_RESULT.equals(message.getMessageType())
-                        && (AgentToolNames.GET_CURRENT_PLAN.equals(message.getToolName())
-                            || AgentToolNames.ADD_PLAN_ITEM.equals(message.getToolName())
-                            || AgentToolNames.REMOVE_PLAN_ITEM.equals(message.getToolName()))) {
-                    String content = message.getContent();
-                    planHint = content == null || content.isBlank() ? "暂无线索"
-                            : content.length() > 60 ? content.substring(0, 60) + "…" : content;
-                    break;
-                }
-            }
-        }
-        sb.append("\n- 志愿单最近状态：").append(planHint);
-        return sb.toString();
-    }
-
     private Map<String, Object> readToolArgs(JsonNode toolArgsNode) {
         if (toolArgsNode == null || toolArgsNode.isMissingNode() || toolArgsNode.isNull() || !toolArgsNode.isObject()) {
             return Collections.emptyMap();
@@ -561,243 +431,210 @@ public class AgentDecisionService {
         );
     }
 
-    private String extractMajorKeyword(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        // 先精确匹配常见专业关键词：避免"推荐好的计算机专业"被正则捕获成"好的计算机"。
-        // 按「最长命中优先」匹配："软件工程就业前景"应命中"软件工程"而非其子串"软件"。
-        String best = null;
-        for (String keyword : MAJOR_KEYWORDS) {
-            if (text.contains(keyword) && (best == null || keyword.length() > best.length())) {
-                best = keyword;
-            }
-        }
-        if (best != null) {
-            return best;
-        }
-        // 再走正则提取列表未覆盖的专业名，并清洗形容词等修饰词
-        Matcher afterMatcher = RECOMMEND_MAJOR_AFTER_PATTERN.matcher(text);
-        if (afterMatcher.find()) {
-            String major = cleanMajorKeyword(afterMatcher.group(1));
-            if (major != null) {
-                return major;
-            }
-        }
-        Matcher beforeMatcher = RECOMMEND_MAJOR_BEFORE_PATTERN.matcher(text);
-        if (beforeMatcher.find()) {
-            String major = cleanMajorKeyword(beforeMatcher.group(1));
-            if (major != null) {
-                return major;
-            }
-        }
-        return null;
+    private String safeContent(AgentMessage message) {
+        return message.getContent() == null ? "" : message.getContent();
     }
 
-    private String extractMajorOverviewKeyword(String text) {
-        Matcher matcher = MAJOR_OVERVIEW_PATTERN.matcher(text);
-        while (matcher.find()) {
-            String keyword = cleanMajorKeyword(matcher.group(1));
-            // 疑问词不是专业方向："什么专业好就业"应引导用户给方向，而不是查询"什么"专业。
-            if (keyword != null && !KEYWORD_INTERROGATIVES.contains(keyword)) {
-                return keyword;
+    // ------------------------------------------------------------------
+    // 本地强意图规划器：只保留组合与排除的布尔结构，词表见 agent/intent-keywords.json
+    // ------------------------------------------------------------------
+
+    private AgentDecision decideLocally(AgentDialogState state) {
+        String normalized = state.normalizedMessage();
+
+        // --- #1: removePlanItem 确认删除 ---
+        // 否定守卫（L-20260921 扫描）："先不确认删除/不删了"包含"确认删除"子串，
+        // 纯 contains 会误执行破坏性操作，必须先排除否定语境。
+        if (lexicon.containsAny(normalized, "deleteConfirm")
+                && !lexicon.containsAny(normalized, "deleteConfirmNegations")) {
+            int selectionIndex = state.selectionIndex();
+            if (state.hasPendingDeleteConfirmation(selectionIndex)) {
+                return new AgentDecision(
+                        AgentToolNames.REMOVE_PLAN_ITEM,
+                        "我现在删除当前志愿单中的第 %s 个结果。".formatted(selectionIndex),
+                        Map.of("selectionIndex", selectionIndex)
+                );
             }
+            return new AgentDecision(AgentToolNames.REPLY, "我没有检测到最近一条待确认的删除请求，请先明确告诉我要删除哪一项，再按提示确认。");
+        }
+
+        // --- P1 #2: 删除提示路由收紧 ---
+        // 要求 "删除/移除" + "志愿/方案" + ("当前" 或 序号引用)；排除过去时陈述
+        if (lexicon.containsAny(normalized, "deleteVerbs")
+                && lexicon.containsAny(normalized, "planNouns")
+                && (lexicon.containsAny(normalized, "currentReference") || state.ordinalReference())
+                && !lexicon.containsAny(normalized, "deletePastTense")) {
+            int selectionIndex = state.selectionIndex();
+            return new AgentDecision(
+                    AgentToolNames.REPLY,
+                    "删除是敏感操作。若确认删除当前志愿单中的第 %s 个结果，请回复\u201c确认删除第%s个\u201d。".formatted(selectionIndex, selectionIndex)
+            );
+        }
+
+        // --- #3: savePlan ---
+        if (lexicon.containsAny(normalized, "savePlanTriggers")) {
+            String planName = state.planName();
+            if (planName == null || planName.isBlank()) {
+                return new AgentDecision(AgentToolNames.REPLY, "请直接告诉我方案名，例如：保存为\u201c冲稳保方案\u201d。");
+            }
+            return new AgentDecision(
+                    AgentToolNames.SAVE_PLAN,
+                    "我现在把当前志愿单保存为《%s》。".formatted(planName),
+                    Map.of("planName", planName)
+            );
+        }
+
+        // --- #4: addPlanItem ---
+        if (lexicon.containsAny(normalized, "addPlanItemTriggers")) {
+            int selectionIndex = state.selectionIndex();
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("selectionIndex", selectionIndex);
+            // L-20260921 扫描：用户点名的学校优先于序号——"把中南大学加入志愿单"
+            // 不再默认加第 1 项，由执行层在最近推荐载荷里按名匹配
+            String namedSchool = state.schoolName() != null ? state.schoolName() : state.lastMentionedSchool();
+            if (namedSchool != null && !namedSchool.isBlank()) {
+                args.put("schoolName", namedSchool);
+            }
+            return new AgentDecision(
+                    AgentToolNames.ADD_PLAN_ITEM,
+                    args.containsKey("schoolName")
+                            ? "我先把最近推荐里的「%s」加入当前志愿单。".formatted(namedSchool)
+                            : "我先把最近推荐里的第 %s 个结果加入当前志愿单。".formatted(selectionIndex),
+                    args
+            );
+        }
+
+        // --- 专业介绍：必须先于学校详情与推荐处理（L-20260921-08 答非所问）---
+        // "它的电子信息工程专业怎么样"这类带着具体专业名+问询语气的消息，应答专业本身，
+        // 而不是被下方的"对话续槽/校名优先"分支抢先倒出整张学校专业表。
+        String majorKeyword = state.majorKeyword();
+        if (majorKeyword == null && state.overviewCue()) {
+            majorKeyword = state.majorOverviewKeyword();
+        }
+        // 阶段③：正则与词典都提取失败时，查专业目录兜底（唯一最长命中才采用）。
+        // 仅在专业问询/推荐语境下扫描，避免闲聊消息触发无谓匹配。
+        if (majorKeyword == null
+                && (state.overviewCue()
+                    || (lexicon.containsAny(normalized, "recommendCue") && lexicon.containsAny(normalized, "majorDirectionNouns")))) {
+            majorKeyword = majorCatalogService.findInText(normalized).orElse(null);
+        }
+        if (isMajorOverviewRequest(normalized, majorKeyword)) {
+            return new AgentDecision(
+                    AgentToolNames.GET_MAJOR_OVERVIEW,
+                    "我先查询“%s”的学习内容、就业方向和报考提醒。".formatted(majorKeyword),
+                    Map.of("majorKeyword", majorKeyword)
+            );
+        }
+
+        // --- P0 #5: getSchoolDetailByName 收紧 ---
+        // 要求 "查看/看看" + 校名 + "详情/信息/专业" 三者同时出现
+        String schoolName = state.schoolName();
+        if (!state.ordinalReference()
+                && schoolName != null
+                && lexicon.containsAny(normalized, "detailViewVerbs")
+                && !lexicon.containsAny(normalized, "detailIntentExclusions")
+                && (lexicon.containsAny(normalized, "detailNouns")
+                    || lexicon.containsAny(normalized, "detailQueryVerbs"))) {
+            return new AgentDecision(
+                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
+                    "我先按学校名帮你查询\u201c%s\u201d的详情和可参考专业。".formatted(schoolName),
+                    Map.of("universityName", schoolName)
+            );
+        }
+
+        // --- P0 #6: getSchoolDetail 收紧 ---
+        // 要求 序号引用(第N个) + "详情/信息/专业" 组合，去掉泛词单独触发
+        if (state.ordinalReference()
+                && lexicon.containsAny(normalized, "schoolDetailNouns")) {
+            return new AgentDecision(
+                    AgentToolNames.GET_SCHOOL_DETAIL,
+                    "我先帮你查看第 %s 个学校的详情和可参考专业。".formatted(state.selectionIndex()),
+                    Map.of("selectionIndex", state.selectionIndex())
+            );
+        }
+
+        // --- 对话续槽（学校上下文）：用"他/它/该校"指代上文学校并问专业/详情 ---
+        String lastMentionedSchool = state.lastMentionedSchool();
+        if (lastMentionedSchool != null
+                && lexicon.containsAny(normalized, "schoolPronouns")
+                && lexicon.containsAny(normalized, "detailNouns")
+                && lexicon.containsAny(normalized, "pronounFollowIntents")) {
+            return new AgentDecision(
+                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
+                    "好的，基于我们刚聊到的%s，我把它的专业信息整理如下：".formatted(lastMentionedSchool),
+                    Map.of("universityName", lastMentionedSchool)
+            );
+        }
+
+        // --- 校名优先：显式校名 + 专业/热门/推荐 → 该校详情（专业列表） ---
+        String mentionedSchoolForMajor = state.strippedSchoolName();
+        if (mentionedSchoolForMajor != null
+                && !state.ordinalReference()
+                && lexicon.containsAny(normalized, "schoolContextCues")) {
+            return new AgentDecision(
+                    AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME,
+                    "好的，我把%s的专业信息整理如下，热门方向已标注：".formatted(mentionedSchoolForMajor),
+                    Map.of("universityName", mentionedSchoolForMajor)
+            );
+        }
+
+        // --- P1 #7: recommendMajors ---
+        if (lexicon.containsAny(normalized, "recommendCue")
+                && lexicon.containsAny(normalized, "majorDirectionNouns") && majorKeyword == null) {
+            return new AgentDecision(AgentToolNames.REPLY,
+                    "想看哪一类专业？告诉我方向（例如：计算机、电子信息、临床医学），我再基于你的画像生成专业推荐。");
+        }
+        if (lexicon.containsAny(normalized, "recommendCue") && majorKeyword != null) {
+            return new AgentDecision(
+                    AgentToolNames.RECOMMEND_MAJORS,
+                    "我先基于你的画像和\u201c%s\u201d的兴趣给你生成专业推荐。".formatted(majorKeyword),
+                    Map.of("majorKeyword", majorKeyword)
+            );
+        }
+
+        // --- #8: recommendSchools ---
+        if (lexicon.containsAny(normalized, "recommendSchoolsTriggers") ||
+                (lexicon.containsAny(normalized, "chongWenBaoCue") && lexicon.containsAny(normalized, "chongWenBaoCombos"))) {
+            return new AgentDecision(AgentToolNames.RECOMMEND_SCHOOLS, "我先基于你当前画像给你生成学校推荐。");
+        }
+
+        // --- P0 #9: getUserProfile 路由收紧 ---
+        if (lexicon.containsAny(normalized, "profileQueries")
+                && !lexicon.containsAny(normalized, "profileEditExclusions")) {
+            return new AgentDecision(AgentToolNames.GET_USER_PROFILE, "我先帮你读取当前画像信息。");
+        }
+
+        // --- #10: getCurrentPlan ---
+        if (lexicon.containsAny(normalized, "currentPlanTriggers") ||
+                (lexicon.containsAny(normalized, "currentReference") && lexicon.containsAny(normalized, "planNouns"))) {
+            return new AgentDecision(AgentToolNames.GET_CURRENT_PLAN, "我先帮你查看当前志愿方案。");
+        }
+
+        // --- 对话续槽：上一轮助手主动追问"专业方向"，本轮短回复即填槽答案 ---
+        if (state.pendingMajorDirectionSlot()) {
+            String direction = state.majorKeyword();
+            if (direction != null) {
+                return new AgentDecision(
+                        AgentToolNames.RECOMMEND_MAJORS,
+                        "好的，按“%s”方向基于你的画像生成专业推荐。".formatted(direction),
+                        Map.of("majorKeyword", direction)
+                );
+            }
+            if (lexicon.containsAny(normalized, "slotUnknownReplies")) {
+                return new AgentDecision(AgentToolNames.REPLY, "那不如先看学校推荐？回复“帮我推荐学校”即可。");
+            }
+            return new AgentDecision(AgentToolNames.REPLY,
+                    "没听清专业方向。请回复一个方向，例如：计算机、电子信息、临床医学。");
         }
         return null;
     }
 
     private boolean isMajorOverviewRequest(String text, String majorKeyword) {
-        if (majorKeyword == null || majorKeyword.isBlank() || !containsMajorOverviewCue(text)) {
+        if (majorKeyword == null || majorKeyword.isBlank() || !lexicon.containsAny(text, "majorOverviewCues")) {
             return false;
         }
         // A request for matching, admission probability, or a school list still belongs to
         // recommendation/probability workflows even if it mentions a major name.
-        return !containsAny(text, "推荐", "适合报", "能上", "录取", "概率", "院校", "学校", "志愿");
-    }
-
-    /** 追溯最近聊到的学校名：名称详情工具消息优先，其次任意消息文本中的校名（取最长匹配，防"按学校名查询"误提取）。 */
-    private String findLastMentionedSchool(List<AgentMessage> recentMessages) {
-        if (recentMessages == null) {
-            return null;
-        }
-        for (int i = recentMessages.size() - 1; i >= 0; i--) {
-            AgentMessage message = recentMessages.get(i);
-            if (AgentToolNames.GET_SCHOOL_DETAIL_BY_NAME.equals(message.getToolName())
-                    && message.getPayloadJson() != null && !message.getPayloadJson().isBlank()) {
-                try {
-                    String name = objectMapper.readTree(message.getPayloadJson())
-                            .path("universityName").asText("");
-                    if (!name.isBlank()) {
-                        return name;
-                    }
-                } catch (Exception ignored) {
-                    // fall through to text scan
-                }
-            }
-            // 助手消息是模板文本（"已按学校名查询 X 的详情"），从中提取会拿到
-            // "已按学校"这类伪校名——文本扫描只信用户消息。
-            if (AgentRoles.USER.equals(message.getRole())) {
-                String schoolName = extractLongestSchoolName(safeContent(message));
-                if (schoolName != null) {
-                    return schoolName;
-                }
-            }
-        }
-        return null;
-    }
-
-    private boolean containsMajorOverviewCue(String text) {
-        return containsAny(text,
-                "怎么样", "好不好", "前景", "就业", "学什么", "学习内容", "课程", "介绍", "发展方向", "就业方向", "适不适合学");
-    }
-
-    /** 去掉专业名前的形容词/修饰词，如"推荐好的计算机专业"→"计算机"。 */
-    private static final List<String> KEYWORD_INTERROGATIVES = List.of(
-            "什么", "哪个", "啥", "哪些", "怎么样", "如何");
-
-    private static final List<String> KEYWORD_STOPWORDS = List.of(
-            "适合我的", "适合的", "合适的", "我喜欢的", "偏好的", "比较好的", "优秀的", "不错的", "好点的",
-            "热门", "强势", "他的", "她的", "它的", "该校");
-
-    private String cleanMajorKeyword(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        String cleaned = value.trim();
-        for (String prefix : List.of("他的", "她的", "它的", "该校的", "适合我的", "适合的", "合适的", "我喜欢的", "偏好的",
-                "比较好的", "优秀的", "不错的", "好点的", "好的", "一些", "几个")) {
-            if (cleaned.startsWith(prefix)) {
-                cleaned = cleaned.substring(prefix.length()).trim();
-            }
-        }
-        if (cleaned.isBlank() || KEYWORD_STOPWORDS.contains(cleaned)) {
-            return null;
-        }
-        return cleaned;
-    }
-
-    private int extractSelectionIndex(String text) {
-        if (text == null || text.isBlank()) {
-            return 1;
-        }
-        Matcher matcher = DIGIT_SELECTION_PATTERN.matcher(text);
-        if (matcher.find()) {
-            return Integer.parseInt(matcher.group(1));
-        }
-        if (text.contains("第二")) {
-            return 2;
-        }
-        if (text.contains("第三")) {
-            return 3;
-        }
-        if (text.contains("第四")) {
-            return 4;
-        }
-        if (text.contains("第五")) {
-            return 5;
-        }
-        if (text.contains("第六")) {
-            return 6;
-        }
-        return 1;
-    }
-
-    private String extractPlanName(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        Matcher matcher = SAVE_NAME_PATTERN.matcher(text);
-        if (matcher.find()) {
-            String name = matcher.group(1).trim();
-            if (!name.isBlank() && !name.equals("方案")) {
-                return name;
-            }
-        }
-        return null;
-    }
-
-    private String extractSchoolName(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        Matcher matcher = SCHOOL_NAME_DETAIL_PATTERN.matcher(text);
-        String matched = null;
-        // 取**最长**匹配：优先命中真实校名（湘潭大学），而不是"推荐学校/按学校"这类动词+泛称组合
-        while (matcher.find()) {
-            String found = matcher.group(1).trim();
-            if (matched == null || found.length() > matched.length()) {
-                matched = found;
-            }
-        }
-        if (matched == null) {
-            return null;
-        }
-        for (String prefix : List.of("帮我看看", "帮我查看", "帮我查查", "帮我查一下",
-                "看看", "查看", "查查", "查一下", "介绍一下")) {
-            if (matched.startsWith(prefix)) {
-                matched = matched.substring(prefix.length()).trim();
-            }
-        }
-        return matched.isBlank() || !isPlausibleSchoolName(matched) ? null : matched;
-    }
-
-    /**
-     * 校名可信度：剔除"动词/量词 + 学校后缀"的泛称组合
-     * （推荐大学 / 这几所大学 / 按学校……），这些不是具体校名。
-     */
-    private boolean isPlausibleSchoolName(String name) {
-        if (name == null || name.isBlank()) {
-            return false;
-        }
-        String stem = name.replaceAll("(大学|学院|学校)$", "").trim();
-        if (stem.length() < 2) {
-            return false;
-        }
-        if (stem.contains("推荐") || stem.contains("报") || stem.contains("选")
-                || stem.contains("几所") || stem.contains("一所")) {
-            return false;
-        }
-        return !stem.startsWith("这") && !stem.startsWith("那") && !stem.startsWith("该")
-                && !stem.startsWith("某") && !stem.startsWith("按")
-                && !stem.startsWith("去") && !stem.startsWith("上") && !stem.startsWith("想");
-    }
-
-    /** 取文本中**最长**的校名匹配："已按学校名查询 湖南师范大学 的详情"应得湖南师范大学，而非"已按学校"。 */
-    private String extractLongestSchoolName(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        Matcher matcher = SCHOOL_NAME_DETAIL_PATTERN.matcher(text);
-        String best = null;
-        while (matcher.find()) {
-            String found = matcher.group(1).trim();
-            if (isPlausibleSchoolName(found) && (best == null || found.length() > best.length())) {
-                best = found;
-            }
-        }
-        return best;
-    }
-
-    private boolean containsOrdinalReference(String text) {
-        return text.contains("第一个")
-                || text.contains("第二个")
-                || text.contains("第三个")
-                || text.contains("第四个")
-                || text.contains("第五个")
-                || text.contains("第六个")
-                || DIGIT_SELECTION_PATTERN.matcher(text).find();
-    }
-
-    private boolean containsAny(String text, String... keywords) {
-        for (String keyword : keywords) {
-            if (text.contains(keyword)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String safeContent(AgentMessage message) {
-        return message.getContent() == null ? "" : message.getContent();
+        return !lexicon.containsAny(text, "majorOverviewExclusions");
     }
 }

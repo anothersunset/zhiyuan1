@@ -1,5 +1,6 @@
 package com.zhiyuan.college.service.agent;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -103,6 +104,65 @@ public class AgentToolRegistry {
             });
         });
         return sb.toString();
+    }
+
+    /**
+     * 原生 function-calling 的工具声明（OpenAI 兼容协议的 tools 数组，DeepSeek 同形状）。
+     * 由 AgentToolSpec 自动派生，另附合成 reply 工具——LLM 认为无需业务工具时原生选择
+     * reply 直接回复，替代旧的"提示词约束输出 JSON"。新增工具时本方法零改动。
+     */
+    public List<Map<String, Object>> getOpenAiToolDefinitions() {
+        List<Map<String, Object>> tools = new ArrayList<>();
+        tools.add(buildReplyToolDefinition());
+        SPECS.values().forEach(spec -> tools.add(buildFunctionDefinition(spec)));
+        return List.copyOf(tools);
+    }
+
+    /** 合成 reply 工具：闲聊、澄清追问、引导补充信息、无工具可匹配时的直接回复出口。 */
+    private Map<String, Object> buildReplyToolDefinition() {
+        return buildFunctionDefinition(new AgentToolSpec(
+                AgentToolNames.REPLY,
+                "不调用业务工具，直接回复用户。适用于：闲聊寒暄、澄清追问、引导用户补充信息、意图不属于任何业务工具",
+                List.of(AgentToolParamSpec.requiredString("reply", "给用户的完整回复文本", 1, 500))));
+    }
+
+    /** 单个规格 → OpenAI function-calling 声明（参数取值范围编码进 JSON Schema）。 */
+    private Map<String, Object> buildFunctionDefinition(AgentToolSpec spec) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        List<String> required = new ArrayList<>();
+        for (AgentToolParamSpec param : spec.parameters()) {
+            Map<String, Object> schema = new LinkedHashMap<>();
+            boolean isInt = "int".equals(param.type());
+            schema.put("type", isInt ? "integer" : "string");
+            String constraint = isInt
+                    ? param.minValue() + "-" + param.maxValue()
+                    : param.minLength() + "-" + param.maxLength() + " 个字符";
+            String defaultHint = param.required() ? "" : "（可选，缺省行为由工具定义）";
+            schema.put("description", param.description() + "（" + constraint + "）" + defaultHint);
+            if (isInt) {
+                schema.put("minimum", param.minValue());
+                schema.put("maximum", param.maxValue());
+            } else {
+                schema.put("minLength", param.minLength());
+                schema.put("maxLength", param.maxLength());
+            }
+            properties.put(param.name(), schema);
+            if (param.required()) {
+                required.add(param.name());
+            }
+        }
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("type", "object");
+        parameters.put("properties", properties);
+        parameters.put("required", required);
+        Map<String, Object> function = new LinkedHashMap<>();
+        function.put("name", spec.name());
+        function.put("description", spec.description());
+        function.put("parameters", parameters);
+        Map<String, Object> definition = new LinkedHashMap<>();
+        definition.put("type", "function");
+        definition.put("function", function);
+        return definition;
     }
 
     public boolean supports(String toolName) {

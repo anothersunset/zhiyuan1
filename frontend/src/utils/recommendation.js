@@ -72,9 +72,17 @@ export function isUserProfileComplete(user) {
 /**
  * 后端会对差距超出模型区间的院校保留概率明细，但拒绝给出具体数字。
  * 只有这个明确判定才映射为 0%；普通的 null 仍表示尚未测算或数据不足。
+ *
+ * 两种后端形态都算"明确极低"：
+ * 1. probability=null 且 explanation 带超出区间标记（旧形态）；
+ * 2. 位次一票否决态：probability=0 且 strategy=null（RecommendationPolicyService.explain
+ *    的 rankVeto，L-20260921 消融后引入）——有分有位次但被位次判定不可能。
  */
 export function isExtremelyLowProbability(detail) {
-  if (!detail || detail.probability != null || detail.recommended !== false) return false;
+  if (!detail || detail.recommended !== false) return false;
+  if (detail.probability != null) {
+    return Number(detail.probability) === 0 && (detail.strategy == null || detail.strategy === "");
+  }
   const explanation = String(detail.explanation || "");
   return explanation.includes("极低概率") || explanation.includes("超出模型可测算区间");
 }

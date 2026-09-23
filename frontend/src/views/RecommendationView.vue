@@ -2,7 +2,6 @@
 import { computed, inject, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import RecommendationResult from "../components/RecommendationResult.vue";
 import SchoolDetailDrawer from "../components/SchoolDetailDrawer.vue";
 import MajorPickDialog from "../components/MajorPickDialog.vue";
@@ -250,7 +249,6 @@ function formatRank(value) {
           />
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
 

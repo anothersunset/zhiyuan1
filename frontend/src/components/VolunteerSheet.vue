@@ -36,7 +36,8 @@ async function fetchSchools() {
       examProvince: props.profile.province,
       subjectType: normalizeSubjectType(props.profile.firstSubject || props.profile.subjects?.[0] || props.profile.subjectType),
       withDataOnly: "true",
-      size: "100"
+      size: "1000",
+      page: "1"
     });
     /* 批次维度：本科批只出本科院校、专科批只出专科院校（后端按 university.tier 过滤） */
     if (props.profile.batch) {
@@ -49,13 +50,25 @@ async function fetchSchools() {
     if (myRank.value != null && Number(myRank.value) > 0) {
       params.set("userRank", String(Number(myRank.value)));
     }
-    const resp = await fetch(`/api/universities?${params.toString()}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    schools.value = data.items || [];
+    /* L-20260921 扫描修复：旧版只拉 100 所且失败仅 console.error（下拉静默残废）；改翻页拉全量 + 可见报错 */
+    const first = await fetch(`/api/universities?${params.toString()}`);
+    if (!first.ok) throw new Error(`HTTP ${first.status}`);
+    const firstData = await first.json();
+    const total = Number(firstData.total || 0);
+    const pages = Math.max(1, Math.ceil(total / 1000));
+    const all = [...(firstData.items || [])];
+    for (let p = 2; p <= pages; p++) {
+      params.set("page", String(p));
+      const pageResp = await fetch(`/api/universities?${params.toString()}`);
+      if (!pageResp.ok) throw new Error(`HTTP ${pageResp.status}`);
+      const pageData = await pageResp.json();
+      all.push(...(pageData.items || []));
+    }
+    schools.value = all;
     syncSlotsFromSchools();
   } catch (ex) {
     console.error("加载院校库失败", ex);
+    ElMessage.error("院校库加载失败，志愿表下拉可能不完整，请刷新重试");
   } finally {
     loadingSchools.value = false;
   }
@@ -98,14 +111,14 @@ function matchesBatchMajor(name, durationYears) {
   const vocational = isVocationalMajor(name, durationYears);
   return batch === "专科批" ? vocational : !vocational;
 }
-/* 志愿位的专业下拉：按批次只出对应层次的专业 */
-const majorOptions = computed(() => {
-  const names = majorCatalog.value.map((m) => m.name).filter(Boolean);
-  const filtered = props.profile.batch
-    ? names.filter((name) => (props.profile.batch === "专科批" ? isVocationalMajor(name) : !isVocationalMajor(name)))
-    : names;
-  return [...new Set(filtered)];
-});
+/* 志愿位的专业下拉：按所选院校的真实开设专业（loadSchoolMajors 按需加载，已按批次过滤） */
+function majorsForRow(slot) {
+  if (!slot || !slot.schoolId) return [];
+  const cached = majorCache.value[slot.schoolId];
+  if (cached) return cached;
+  loadSchoolMajors(slot.schoolId);
+  return [];
+}
 
 /* 展开"可填专业"时按需加载该校专业列表（详情接口含 majors），按批次过滤本/专层次 */
 async function loadSchoolMajors(id) {
@@ -567,7 +580,7 @@ defineExpose({ smartSort });
 
           <div class="mnz-pcard__main">
             <div class="mnz-pcard__title">
-              <h4>{{ f.school.name }}<span>[{{ String(f.school.id).padStart(2, "0") }}组]</span></h4>
+              <h4>{{ f.school.name }}</h4>
               <span class="mnz-pcard__disc">{{ f.disciplines }}</span>
             </div>
 
@@ -586,7 +599,7 @@ defineExpose({ smartSort });
 
             <div class="mnz-pcard__foot">
               <button type="button" class="mnz-pcard__majors-btn" @click="toggleExpand(f.school.id)">
-                可填专业({{ f.majorCount ?? f.majorList.length }})
+                可填专业({{ f.majorList.length || f.school.majorCount || 0 }})
                 <el-icon><Promotion /></el-icon>
               </button>
               <button type="button" class="mnz-pcard__ask" @click="askAbout(f)">问小智解读</button>
@@ -737,10 +750,13 @@ defineExpose({ smartSort });
                 multiple
                 collapse-tags
                 collapse-tags-tooltip
-                placeholder="选择专业（最多 6 个）"
+                :placeholder="slots[seg.range[0] + n - 1].schoolId ? '选择专业（最多 6 个）' : '先选择院校'"
                 :max-collapse-tags="2"
               >
-                <el-option v-for="m in majorOptions" :key="m" :label="m" :value="m" />
+                <el-option v-for="m in majorsForRow(slots[seg.range[0] + n - 1])" :key="m" :label="m" :value="m" />
+                <template #empty>
+                  <span class="mnz-vrow__majors-empty">{{ slots[seg.range[0] + n - 1].school ? "该校专业加载中，或当前批次暂无专业数据" : "请先选择院校" }}</span>
+                </template>
               </el-select>
 
               <button

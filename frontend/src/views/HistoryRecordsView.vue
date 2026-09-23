@@ -1,7 +1,6 @@
 <script setup>
 import { inject, onMounted, onUnmounted } from "vue";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import HistoryView from "../components/HistoryView.vue";
 import RecommendationResult from "../components/RecommendationResult.vue";
 import { formatDateTime, queryTypeLabel } from "../utils/recommendation";
@@ -32,7 +31,6 @@ onUnmounted(() => {
           <HistoryView :records="historyRecords" :loading="historyLoading" @refresh="loadHistory" @view="openHistoryResult" @delete="deleteHistoryRecord" />
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
 

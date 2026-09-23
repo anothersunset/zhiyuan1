@@ -70,16 +70,16 @@ async function fetchSchools() {
     const params = new URLSearchParams({
       examProvince: profile.province,
       subjectType: subjectType.value,
-      size: "100",
+      size: "1000",
       page: "1"
     });
     if (score.value != null) params.set("score", String(score.value));
     if (rank.value != null) params.set("userRank", String(rank.value));
     const first = await (await fetch(`/api/universities?${params.toString()}`)).json();
     const total = Number(first.total || 0);
-    const pages = Math.max(1, Math.ceil(total / 100));
+    const pages = Math.max(1, Math.ceil(total / 1000));
     const all = [...(first.items || [])];
-    for (let p = 2; p <= Math.min(pages, 15); p++) {
+    for (let p = 2; p <= pages; p++) {
       params.set("page", String(p));
       const pageData = await (await fetch(`/api/universities?${params.toString()}`)).json();
       all.push(...(pageData.items || []));

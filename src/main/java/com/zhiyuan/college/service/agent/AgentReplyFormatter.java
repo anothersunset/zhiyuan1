@@ -3,8 +3,10 @@ package com.zhiyuan.college.service.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhiyuan.college.model.entity.UserAccount;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,15 +48,94 @@ public class AgentReplyFormatter {
         }
         JsonNode topItems = payload.path("topItems");
         if (!topItems.isArray() || topItems.isEmpty()) {
+            // 校名/序号查校详情（getSchoolDetail、getSchoolDetailByName）：载荷带
+            // universityName + majors 数组，渲染成校情卡片而不是回显一行摘要。
+            JsonNode majors = payload.path("majors");
+            if (!payload.path("universityName").asText("").isBlank() && majors.isArray()) {
+                return renderSchoolDetailMarkdown(payload, majors, toolResult);
+            }
             return toolResult.getSummary();
         }
         return renderRecommendationMarkdown(payload, topItems, user);
     }
 
+    /**
+     * 校情卡片：院校层次/省份 + 可参考专业表（载荷里是按参考录取分从高到低的
+     * 前 8 条，录取分较高通常对应报考热度更高），附下一步引导。
+     * 完整专业清单仍留在消息库，聊天里给前 8 条足够决策参考。
+     */
+    private String renderSchoolDetailMarkdown(JsonNode payload, JsonNode majors, AgentToolResult toolResult) {
+        String universityName = payload.path("universityName").asText("");
+        if (majors.isEmpty()) {
+            return toolResult.getSummary();
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("## ").append(universityName).append("\n\n");
+        String tierLine = buildTierLine(payload);
+        if (!tierLine.isBlank()) {
+            sb.append(tierLine).append("\n");
+        }
+        String province = payload.path("universityProvince").asText("");
+        if (!province.isBlank()) {
+            sb.append("所在省份：").append(province).append("\n");
+        }
+        if (!tierLine.isBlank() || !province.isBlank()) {
+            sb.append("\n");
+        }
+
+        int total = payload.path("majorCount").asInt(majors.size());
+        sb.append("### 可参考专业（共 %d 个，以下按参考录取分从高到低展示）\n\n".formatted(total));
+        sb.append("| 专业 | 参考录取分 | 最低位次 |\n");
+        sb.append("|---|---|---|\n");
+        for (JsonNode major : majors) {
+            String name = major.path("majorName").asText("—");
+            int cutoff = major.path("cutoffScore").asInt(0);
+            int minRank = major.path("minRank").asInt(0);
+            sb.append(String.format("| %s | %s | %s |\n", name,
+                    cutoff > 0 ? String.valueOf(cutoff) : "—",
+                    minRank > 0 ? String.valueOf(minRank) : "—"));
+        }
+        sb.append("\n");
+
+        sb.append("### 下一步\n");
+        sb.append("- 录取分较高的专业通常报考热度也更高；选科要求与招生计划请以当年招生章程为准。\n");
+        sb.append("- 想了解某个专业的学习内容与就业方向，直接问我，例如“电子信息工程专业怎么样”。\n");
+        sb.append("- 生成学校推荐后，可以说“把第 N 所加入志愿单”把该校加入志愿表。\n");
+        return sb.toString();
+    }
+
+    /** 院校层次行：985/211/双一流 优先，schoolTags 去重补充；全空时退回 universityTier。 */
+    private String buildTierLine(JsonNode payload) {
+        List<String> labels = new ArrayList<>();
+        if (payload.path("is985").asBoolean(false)) {
+            labels.add("985");
+        }
+        if (payload.path("is211").asBoolean(false)) {
+            labels.add("211");
+        }
+        if (payload.path("isDoubleFirstClass").asBoolean(false)) {
+            labels.add("双一流");
+        }
+        JsonNode schoolTags = payload.path("schoolTags");
+        if (schoolTags.isArray()) {
+            for (JsonNode tag : schoolTags) {
+                String text = tag.asText("").trim();
+                if (!text.isBlank() && !labels.contains(text)) {
+                    labels.add(text);
+                }
+            }
+        }
+        if (labels.isEmpty()) {
+            String tier = payload.path("universityTier").asText("").trim();
+            return tier.isBlank() ? "" : "院校层次：" + tier;
+        }
+        return "院校层次：" + String.join(" / ", labels);
+    }
+
     private String renderRecommendationMarkdown(JsonNode payload, JsonNode topItems, UserAccount user) {
         StringBuilder sb = new StringBuilder();
         int score = user != null && user.getScore() != null ? user.getScore() : 0;
-        String subject = user != null && user.getSubjectType() != null ? user.getSubjectType().name() : "未知";
+        String subject = user != null && user.getSubjectType() != null ? user.getSubjectType().getDisplayName() : "未知";
         String province = user != null && user.getExamProvince() != null ? user.getExamProvince() : "未知";
         JsonNode userRankNode = payload.path("userRank");
         String userRank = userRankNode.isMissingNode() || userRankNode.isNull() ? "暂无" : String.valueOf(userRankNode.asInt());

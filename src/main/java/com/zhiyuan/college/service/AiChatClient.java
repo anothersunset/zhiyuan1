@@ -126,6 +126,92 @@ public class AiChatClient {
     }
 
     /**
+     * 原生 tool-calling 的决策结果：模型选择了某个工具，或直接输出了文本。
+     *
+     * @param toolName      模型选择的工具名；直接回复时为 {@code null}
+     * @param argumentsJson 工具参数的原始 JSON 字符串（由调用方解析）
+     * @param content       模型随工具调用附带的一句话说明；纯文本回复时为完整回复
+     */
+    public record NativeToolCall(String toolName, String argumentsJson, String content) {
+
+        public boolean isToolCall() {
+            return toolName != null && !toolName.isBlank();
+        }
+    }
+
+    /**
+     * 原生 function-calling 请求（OpenAI 兼容协议的 {@code tools}/{@code tool_choice}，
+     * DeepSeek 同形状）：工具选择与参数生成交给模型本身，替代提示词约束输出 JSON。
+     * 与 {@link #chat} 不同，本路径不带 {@code response_format}——DeepSeek 的 JSON 输出
+     * 与 function calling 互斥。返回模型给出的第一个工具调用；未调用工具时 toolName 为
+     * {@code null}、content 承载文本（为空视为上游异常，与 chat 同样抛 502 触发调用方回退）。
+     */
+    public NativeToolCall chatWithTools(String systemPrompt,
+                                        String userPrompt,
+                                        double temperature,
+                                        List<Map<String, Object>> tools) {
+        AiRuntimeConfigService.ResolvedAiConfig config = resolveConfig();
+        RestClient restClient = buildRestClient(config);
+        Map<String, Object> requestBody = new LinkedHashMap<>();
+        requestBody.put("model", config.model());
+        requestBody.put("temperature", temperature);
+        requestBody.put("messages", List.of(
+                Map.of("role", "system", "content", systemPrompt),
+                Map.of("role", "user", "content", userPrompt)
+        ));
+        requestBody.put("tools", tools);
+        requestBody.put("tool_choice", "auto");
+
+        Exception lastFailure = null;
+        for (int attempt = 1; attempt <= retryMaxAttempts; attempt++) {
+            try {
+                return performToolChat(restClient, requestBody);
+            } catch (Exception ex) {
+                lastFailure = ex;
+                if (attempt >= retryMaxAttempts || !isRetryable(ex)) {
+                    break;
+                }
+                sleepBeforeRetry();
+            }
+        }
+
+        if (lastFailure instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        throw new IllegalStateException("AI tool-calling failed after retries", lastFailure);
+    }
+
+    private NativeToolCall performToolChat(RestClient restClient, Map<String, Object> requestBody) {
+        JsonNode response = restClient.post()
+                .uri("/chat/completions")
+                .body(requestBody)
+                .retrieve()
+                .body(JsonNode.class);
+
+        if (response == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI response is empty");
+        }
+
+        JsonNode message = response.path("choices").path(0).path("message");
+        JsonNode toolCalls = message.path("tool_calls");
+        if (toolCalls.isArray() && !toolCalls.isEmpty()) {
+            JsonNode function = toolCalls.get(0).path("function");
+            String toolName = function.path("name").asText("").trim();
+            if (!toolName.isBlank()) {
+                return new NativeToolCall(
+                        toolName,
+                        function.path("arguments").asText("{}"),
+                        message.path("content").asText(""));
+            }
+        }
+        String content = message.path("content").asText("");
+        if (content.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI response content is empty");
+        }
+        return new NativeToolCall(null, null, content);
+    }
+
+    /**
      * Streams the chat completion (OpenAI-compatible SSE: lines prefixed with {@code data: },
      * deltas under {@code choices[0].delta.content}). Each text delta is delivered to
      * {@code onChunk}. Returns after the stream completes or fails.

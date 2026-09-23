@@ -3,7 +3,6 @@ import { ElMessage } from "element-plus";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import {
   PROVINCES,
   profile,
@@ -215,7 +214,6 @@ watch([province, subjectType], () => {
           </template>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
   </div>

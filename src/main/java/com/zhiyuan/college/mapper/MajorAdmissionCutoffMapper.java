@@ -48,6 +48,9 @@ public interface MajorAdmissionCutoffMapper extends BaseMapper<MajorAdmissionCut
                 SELECT MAX(m2.admission_year)
                 FROM major_admission_cutoff m2
                 WHERE m2.major_name = #{majorName}
+                  AND m2.university_id = m.university_id
+                  AND m2.province = m.province
+                  AND m2.subject_type = m.subject_type
               )
             <if test="province != null and province != ''">
               AND m.province = #{province}
@@ -67,17 +70,18 @@ public interface MajorAdmissionCutoffMapper extends BaseMapper<MajorAdmissionCut
                                                          @Param("subjectType") String subjectType);
 
     @Select("""
-            SELECT university_id AS universityId,
-                   SUM(plan_count) AS planCount,
-                   COUNT(DISTINCT major_name) AS majorCount
-            FROM major_admission_cutoff
-            WHERE province = #{province}
-              AND admission_year = (
+            SELECT m.university_id AS universityId,
+                   SUM(m.plan_count) AS planCount,
+                   COUNT(DISTINCT m.major_name) AS majorCount
+            FROM major_admission_cutoff m
+            WHERE m.province = #{province}
+              AND m.admission_year = (
                 SELECT MAX(m2.admission_year)
                 FROM major_admission_cutoff m2
-                WHERE m2.province = #{province}
+                WHERE m2.province = m.province
+                  AND m2.university_id = m.university_id
               )
-            GROUP BY university_id
+            GROUP BY m.university_id
             """)
     List<Map<String, Object>> aggregatePlanByUniversity(@Param("province") String province);
 

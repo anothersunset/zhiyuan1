@@ -3,7 +3,6 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { CaretRight, Link as LinkIcon } from "@element-plus/icons-vue";
 import GkHeader from "../components/GkHeader.vue";
-import GkSidePanel from "../components/GkSidePanel.vue";
 import { NEWS_ARTICLES, newsById } from "../utils/newsData";
 
 const route = useRoute();
@@ -103,7 +102,6 @@ function tagCls(tag) {
           </article>
         </section>
 
-        <GkSidePanel />
       </div>
     </main>
   </div>

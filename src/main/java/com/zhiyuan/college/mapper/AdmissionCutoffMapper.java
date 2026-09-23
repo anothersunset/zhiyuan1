@@ -48,6 +48,7 @@ public interface AdmissionCutoffMapper extends BaseMapper<AdmissionCutoff> {
                 FROM admission_cutoff c2
                 WHERE c2.province = #{province}
                   AND c2.subject_type = #{subjectType}
+                  AND c2.university_id = c.university_id
               )
             """)
     List<AdmissionCutoffWithUniversity> findLatestByProvinceAndSubject(@Param("province") String province,

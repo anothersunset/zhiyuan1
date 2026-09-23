@@ -34,6 +34,11 @@ public class RecommendationPolicyService {
 
     /**
      * 概率拆解：不过滤、不丢数据，把模型中间量全部输出。
+     *
+     * <p>位次一票否决（L-20260921 消融实验 A0→A1）：当位次数据齐全且差距超出模型区间
+     * （rankGap < MIN_RANK_GAP，即该校最低位次比考生高出 3000 名以上）时，位次判定
+     * "不可能"拥有否决权——不允许单凭某一年分数线碰巧偏低（score 概率）把该校救回推荐。
+     * 位次数据缺失（userRank/minRank 缺一）时才允许退回单分数口径。</p>
      */
     public ProbabilityBreakdown explain(Integer userScore,
                                        Integer userRank,
@@ -43,8 +48,11 @@ public class RecommendationPolicyService {
         Integer rankGap = userRank == null || minRank == null ? null : minRank - userRank;
         Integer rankProbability = rankGap == null ? null : computeRankProbability(rankGap);
         Integer scoreProbability = scoreGap == null ? null : computeScoreProbability(scoreGap);
-        Integer probability = blendProbability(rankProbability, scoreProbability);
-        StrategyType strategy = probability == null ? null : classifyByProbability(probability);
+        boolean rankVeto = rankGap != null && rankGap < MIN_RANK_GAP;
+        Integer probability = rankVeto ? Integer.valueOf(0) : blendProbability(rankProbability, scoreProbability);
+        StrategyType strategy = probability == null || (rankVeto && probability == 0)
+                ? null
+                : classifyByProbability(probability);
         boolean recommended = probability != null
                 && strategy != null
                 && probability >= scoringProperties.getMinimumProbability();

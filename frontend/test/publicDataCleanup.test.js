@@ -20,9 +20,8 @@ test("home page contains no local heat, salary, rank-range, or probability class
 
 test("ranking pages contain no local 20-school list", async () => {
   const rank = await source("../src/views/RankView.vue");
-  const side = await source("../src/components/GkSidePanel.vue");
-  assert.doesNotMatch(`${rank}\n${side}`, /RANK_LIST|topSchools/);
-  assert.match(rank, /暂无可追溯的权威院校排行数据/);
+  assert.doesNotMatch(rank, /RANK_LIST|topSchools/);
+  assert.match(rank, /当前类型暂无可追溯排名的院校/);
 });
 
 test("enrollment page uses shared subject data without a fabricated trend", async () => {

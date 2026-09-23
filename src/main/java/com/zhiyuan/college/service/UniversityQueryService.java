@@ -12,6 +12,7 @@ import com.zhiyuan.college.model.dto.UniversityFilterOptionsResponse;
 import com.zhiyuan.college.model.dto.UniversityListItemResponse;
 import com.zhiyuan.college.model.dto.UniversityListResponse;
 import com.zhiyuan.college.model.dto.UniversityMajorItemResponse;
+import com.zhiyuan.college.model.dto.UniversityRankingItemResponse;
 import com.zhiyuan.college.model.entity.AdmissionCutoff;
 import com.zhiyuan.college.model.entity.MajorAdmissionCutoff;
 import com.zhiyuan.college.model.entity.University;
@@ -39,7 +40,71 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class UniversityQueryService {
 
-    private static final int MAX_PAGE_SIZE = 100;
+    private static final int MAX_PAGE_SIZE = 1000;
+    /** 查大学列表重计算结果缓存：TTL 与容量上限（超限整体清空）。 */
+    private static final long LIST_CACHE_TTL_MILLIS = 3 * 60 * 1000L;
+    private static final int LIST_CACHE_MAX_ENTRIES = 64;
+    private final Map<String, CachedList> cachedLists = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, CachedContext> cachedContexts = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class CachedList {
+        private volatile List<UniversityListItemResponse> items;
+        private volatile long atMillis;
+    }
+
+    /** 一次列表计算的公共重 SQL 产物：校线映射 + 计划聚合（仅依赖省份+科类）。 */
+    private static final class CachedContext {
+        private volatile Map<Long, AdmissionCutoff> latestCutoffs = Map.of();
+        private volatile Map<Long, long[]> planAgg = Map.of();
+        private volatile long atMillis;
+    }
+
+    private CachedContext cachedContexts(String examProvince, String subjectType) {
+        String key = examProvince + "|" + subjectType;
+        long now = System.currentTimeMillis();
+        cachedContexts.values().removeIf(entry -> now - entry.atMillis > LIST_CACHE_TTL_MILLIS);
+        if (cachedContexts.size() > 32) {
+            cachedContexts.clear();
+        }
+        CachedContext cached = cachedContexts.computeIfAbsent(key, key0 -> {
+            CachedContext context = new CachedContext();
+            Map<Long, AdmissionCutoff> cutoffMap = new HashMap<>();
+            List<AdmissionCutoff> cutoffs = admissionCutoffMapper.findLatestPerUniversity(examProvince, subjectType);
+            if (cutoffs != null) {
+                for (AdmissionCutoff cutoff : cutoffs) {
+                    if (cutoff != null && cutoff.getUniversityId() != null) {
+                        cutoffMap.putIfAbsent(cutoff.getUniversityId(), cutoff);
+                    }
+                }
+            }
+            context.latestCutoffs = cutoffMap;
+            Map<Long, long[]> planAgg = new HashMap<>();
+            if (examProvince != null && !examProvince.isBlank()) {
+                List<Map<String, Object>> rows = majorAdmissionCutoffMapper.aggregatePlanByUniversity(examProvince);
+                if (rows != null) {
+                    for (Map<String, Object> row : rows) {
+                        Object uid = row.get("universityId");
+                        if (uid == null) {
+                            continue;
+                        }
+                        long[] agg = new long[2];
+                        Object plan = row.get("planCount");
+                        Object majorsCount = row.get("majorCount");
+                        agg[0] = plan == null ? 0 : ((Number) plan).longValue();
+                        agg[1] = majorsCount == null ? 0 : ((Number) majorsCount).longValue();
+                        planAgg.put(((Number) uid).longValue(), agg);
+                    }
+                }
+            }
+            context.planAgg = planAgg;
+            context.atMillis = now;
+            return context;
+        });
+        CachedContext snapshot = new CachedContext();
+        snapshot.latestCutoffs = cached.latestCutoffs;
+        snapshot.planAgg = cached.planAgg;
+        return snapshot;
+    }
     private static final String FALLBACK_PROVINCE = "浙江";
 
     private final UniversityMapper universityMapper;
@@ -47,6 +112,64 @@ public class UniversityQueryService {
     private final MajorAdmissionCutoffMapper majorAdmissionCutoffMapper;
     private final MajorMapper majorMapper;
     private final ProbabilityService probabilityService;
+
+    /**
+     * 院校排行：软科中国大学排名（soft_ranking，可溯源），支持院校类型过滤。
+     * 与"本地生成榜单"的旧设计不同，排名数据来自软科官方榜单入库（W6 属性补全）。
+     */
+    public List<UniversityRankingItemResponse> ranking(String schoolType) {
+        List<Map<String, Object>> rows = universityMapper.findRanking(trimToNull(schoolType));
+        List<UniversityRankingItemResponse> items = new ArrayList<>();
+        if (rows == null) {
+            return items;
+        }
+        for (Map<String, Object> row : rows) {
+            Boolean is985 = intFlag(row.get("is985"));
+            Boolean is211 = intFlag(row.get("is211"));
+            Boolean isDoubleFirstClass = intFlag(row.get("isDoubleFirstClass"));
+            String tier = stringOrNull(row.get("tier"));
+            String tags = stringOrNull(row.get("tags"));
+            items.add(new UniversityRankingItemResponse(
+                    longOrNull(row.get("id")),
+                    stringOrNull(row.get("name")),
+                    stringOrNull(row.get("province")),
+                    tier,
+                    stringOrNull(row.get("nature")),
+                    stringOrNull(row.get("schoolType")),
+                    is985,
+                    is211,
+                    isDoubleFirstClass,
+                    UniversityTagUtils.buildSchoolTags(is985, is211, isDoubleFirstClass, tier, tags),
+                    tags,
+                    intOrNull(row.get("softRanking"))
+            ));
+        }
+        return items;
+    }
+
+    private Boolean intFlag(Object value) {
+        // tinyint(1) 被 JDBC 映射为 Boolean，其他整型列为 Number
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        return value instanceof Number number && number.intValue() != 0;
+    }
+
+    private String stringOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private Long longOrNull(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private Integer intOrNull(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
 
     public UniversityQueryService(UniversityMapper universityMapper,
                                   AdmissionCutoffMapper admissionCutoffMapper,
@@ -92,8 +215,10 @@ public class UniversityQueryService {
         if (majorId != null) {
             var majorRows = majorAdmissionCutoffMapper.findSchoolsByMajorName(
                     resolveMajorName(majorId), null, null);
-            if (majorRows != null && !majorRows.isEmpty()) {
-                majorSchoolIds = new java.util.HashSet<>();
+            // L-20260921-09：专业筛选解析为空时必须用空集合（返回 0 结果），
+            // 不得保持 null 静默退化为"不过滤"——那是 L-08 同族的丢过滤回退
+            majorSchoolIds = new java.util.HashSet<>();
+            if (majorRows != null) {
                 for (MajorSchoolItemResponse row : majorRows) {
                     if (row.getUniversityId() != null) {
                         majorSchoolIds.add(row.getUniversityId());
@@ -103,35 +228,12 @@ public class UniversityQueryService {
         }
 
         RankResolution rank = probabilityService.resolveRank(examProvince, subjectType, score, providedRank);
-        Map<Long, AdmissionCutoff> latestCutoffs = new HashMap<>();
-        List<AdmissionCutoff> cutoffs = admissionCutoffMapper.findLatestPerUniversity(examProvince, subjectType);
-        if (cutoffs != null) {
-            for (AdmissionCutoff cutoff : cutoffs) {
-                if (cutoff != null && cutoff.getUniversityId() != null) {
-                    latestCutoffs.putIfAbsent(cutoff.getUniversityId(), cutoff);
-                }
-            }
-        }
 
-        // 招生计划聚合：计划数 + 专业数（按考生省份最新年份）
-        Map<Long, long[]> planAgg = new HashMap<>();
-        if (examProvince != null && !examProvince.isBlank()) {
-            List<Map<String, Object>> rows = majorAdmissionCutoffMapper.aggregatePlanByUniversity(examProvince);
-            if (rows != null) {
-                for (Map<String, Object> row : rows) {
-                    Object uid = row.get("universityId");
-                    if (uid == null) {
-                        continue;
-                    }
-                    long[] agg = new long[2];
-                    Object plan = row.get("planCount");
-                    Object majorsCount = row.get("majorCount");
-                    agg[0] = plan == null ? 0 : ((Number) plan).longValue();
-                    agg[1] = majorsCount == null ? 0 : ((Number) majorsCount).longValue();
-                    planAgg.put(((Number) uid).longValue(), agg);
-                }
-            }
-        }
+        // 重 SQL 上下文缓存（仅依赖省份+科类，与用户分数无关）：校线映射 + 计划聚合。
+        // 16 万行级 GROUP BY 每请求重跑是列表慢的主因；TTL 3 分钟，数据导入后自动过期。
+        CachedContext context = cachedContexts(examProvince, subjectType);
+        Map<Long, AdmissionCutoff> latestCutoffs = new HashMap<>(context.latestCutoffs);
+        Map<Long, long[]> planAgg = new HashMap<>(context.planAgg);
 
         List<UniversityListItemResponse> items = new ArrayList<>();
         for (University university : universities) {
@@ -190,7 +292,8 @@ public class UniversityQueryService {
                             university.getIs985(),
                             university.getIs211(),
                             university.getIsDoubleFirstClass(),
-                            university.getTier()),
+                            university.getTier(),
+                            university.getTags()),
                     university.getTags(),
                     cutoff == null ? null : cutoff.getAdmissionYear(),
                     cutoff == null ? null : cutoff.getCutoffScore(),
@@ -205,11 +308,32 @@ public class UniversityQueryService {
         }
 
         items.sort(buildComparator(sort));
-        int total = items.size();
+
+        // 计算结果缓存：排序后的全量 items 与分页无关，翻页/重复访问零成本。
+        // TTL 短（3 分钟），数据导入后自动过期；容量超限整体清空（防膨胀）。
+        String cacheKey = String.join("|",
+                String.valueOf(examProvince), String.valueOf(subjectType), String.valueOf(schoolProvince),
+                String.valueOf(normalizedLevel), String.valueOf(normalizedAdmissionBatch), String.valueOf(trimToNull(tag)),
+                String.valueOf(trimToNull(keyword)), String.valueOf(score), String.valueOf(providedRank),
+                String.valueOf(trimToNull(sort)), String.valueOf(withDataOnly),
+                String.valueOf(trimToNull(nature)), String.valueOf(trimToNull(schoolType)), String.valueOf(majorId));
+        long now = System.currentTimeMillis();
+        cachedLists.values().removeIf(entry -> now - entry.atMillis > LIST_CACHE_TTL_MILLIS);
+        if (cachedLists.size() > 64) {
+            cachedLists.clear();
+        }
+        List<UniversityListItemResponse> cachedItems = cachedLists.computeIfAbsent(cacheKey, key -> {
+            CachedList cached = new CachedList();
+            cached.items = items;
+            cached.atMillis = now;
+            return cached;
+        }).items;
+
+        int total = cachedItems.size();
         long requestedOffset = (long) (safePage - 1) * safeSize;
         int fromIndex = (int) Math.min(requestedOffset, total);
         int toIndex = Math.min(fromIndex + safeSize, total);
-        List<UniversityListItemResponse> pageItems = new ArrayList<>(items.subList(fromIndex, toIndex));
+        List<UniversityListItemResponse> pageItems = new ArrayList<>(cachedItems.subList(fromIndex, toIndex));
         return new UniversityListResponse(
                 safePage,
                 safeSize,
@@ -340,7 +464,8 @@ public class UniversityQueryService {
                         university.getIs985(),
                         university.getIs211(),
                         university.getIsDoubleFirstClass(),
-                        university.getTier()),
+                        university.getTier(),
+                        university.getTags()),
                 university.getTags(),
                 examProvince,
                 subjectType,

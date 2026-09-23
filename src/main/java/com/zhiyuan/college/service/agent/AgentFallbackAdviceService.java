@@ -136,7 +136,7 @@ public class AgentFallbackAdviceService {
     private String buildUserPrompt(UserAccount user, RecommendationRequest request) {
         StringBuilder sb = new StringBuilder();
         sb.append("考生画像：分数=").append(user.getScore());
-        sb.append("，科类=").append(user.getSubjectType() == null ? "未知" : user.getSubjectType().name());
+        sb.append("，科类=").append(user.getSubjectType() == null ? "未知" : user.getSubjectType().getDisplayName());
         sb.append("，省份=").append(user.getExamProvince() == null ? "未知" : user.getExamProvince());
         sb.append("。\n");
         sb.append("推荐意图：");

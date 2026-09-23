@@ -13,7 +13,7 @@ spring:
       timeout: ${REDIS_TIMEOUT:3s}
   sql:
     init:
-      mode: ${DB_SCHEMA_INIT_MODE:always}
+      mode: ${DB_SCHEMA_INIT_MODE:never}
       schema-locations: classpath:db/schema.sql
       continue-on-error: false
 app:
@@ -39,6 +39,30 @@ ai:
     timeout:
       connect-millis: ${QWEN_TIMEOUT_CONNECT_MILLIS:5000}
       read-millis: ${QWEN_TIMEOUT_READ_MILLIS:30000}
+  agent:
+    # LLM 模糊意图兜底走原生 function-calling（OpenAI 兼容 tools 参数，DeepSeek 同形状）；
+    # 关闭后回退旧的"提示词约束输出 JSON"模式。
+    tool-calling:
+      enabled: ${AGENT_TOOL_CALLING_ENABLED:true}
+    # 校准语义路由（借鉴 Jev "System One" 原理，纯自研实现）：类型化 Choice 路由 + 置信度门控。
+    # 决策后端是项目自有的 DeepSeek 通道（DeepSeekChoiceProvider），不引入任何外部模型服务。
+    # 默认 enabled=false = 行为与旧版完全一致；mode=shadow 只旁路记对比日志（先对账），
+    # mode=active 才允许 confidence>=act-threshold 短路；任何异常/超时自动回落旧路径。
+    calibrated-routing:
+      enabled: ${AGENT_CALIBRATED_ROUTING_ENABLED:false}
+      mode: ${AGENT_CALIBRATED_ROUTING_MODE:shadow}            # shadow | active
+      act-threshold: ${AGENT_CALIBRATED_ROUTING_ACT_THRESHOLD:0.9}
+      route-timeout-millis: ${AGENT_CALIBRATED_ROUTING_TIMEOUT_MILLIS:4000}
+      provider: ${AGENT_CALIBRATED_ROUTING_PROVIDER:deepseek-choice}
+    # 删除确认的 Noul 语义判定（独立开关，便于单独回退）：仅高置信明确确认放行转述式删除，
+    # 失败一律 fail-closed 要求显式确认（与旧路径一致）。
+    delete-semantic-confirm:
+      enabled: ${AGENT_DELETE_SEMANTIC_CONFIRM_ENABLED:false}
+    # 工具失败 → LLM 改写兜底（产品指定设计）：只读工具硬失败（如学校未收录）时，把用户原话
+    # 和失败原因交给 LLM，用通用知识给出有帮助的回复（标注非系统数据、禁编造分数位次），
+    # 替代红色报错；关闭即回退旧的失败话术。
+    failure-rewrite:
+      enabled: ${AGENT_FAILURE_REWRITE_ENABLED:true}
 auth:
   token-ttl-seconds: ${AUTH_TOKEN_TTL_SECONDS:86400}
   # Local development fallback only. Production MUST provide AUTH_JWT_SECRET

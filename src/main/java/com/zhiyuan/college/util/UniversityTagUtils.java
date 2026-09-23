@@ -57,6 +57,19 @@ public final class UniversityTagUtils {
                                                Boolean is211,
                                                Boolean isDoubleFirstClass,
                                                String tier) {
+        return buildSchoolTags(is985, is211, isDoubleFirstClass, tier, null);
+    }
+
+    /**
+     * 层级标签（985/双一流，沿用 20260820 的 211≡双一流 口径）+ 院校类型段（综合类/政法类…）。
+     * 类型段来自 university.tags 标准竖线串（W6 属性补全后的数据），过滤掉与层级语义
+     * 重复的 "211"，保持标签语义不回退。
+     */
+    public static List<String> buildSchoolTags(Boolean is985,
+                                               Boolean is211,
+                                               Boolean isDoubleFirstClass,
+                                               String tier,
+                                               String tagsColumn) {
         Boolean resolvedIs985 = resolveIs985(is985, tier);
         Boolean resolvedIs211 = resolveIs211(is211, tier);
         Boolean resolvedIsDoubleFirstClass = resolveIsDoubleFirstClass(isDoubleFirstClass, tier);
@@ -67,6 +80,15 @@ public final class UniversityTagUtils {
         // 双一流 ≡ 211：211 不再单独作为展示标签，按最高标准并入双一流（20260820 概念更新）
         if (Boolean.TRUE.equals(resolvedIsDoubleFirstClass) || Boolean.TRUE.equals(resolvedIs211)) {
             tags.add("双一流");
+        }
+        if (tagsColumn != null && !tagsColumn.isBlank()) {
+            for (String part : tagsColumn.split("\\|")) {
+                String tag = part.trim();
+                if (tag.isEmpty() || "211".equals(tag) || tags.contains(tag)) {
+                    continue;
+                }
+                tags.add(tag);
+            }
         }
         return tags;
     }

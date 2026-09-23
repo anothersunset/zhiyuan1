@@ -39,6 +39,7 @@ public class AgentToolFacade {
     private final AgentMajorOverviewService majorOverviewService;
     private final ObjectMapper objectMapper;
     private final AgentFallbackAdviceService fallbackAdviceService;
+    private final AgentMajorCatalogService majorCatalogService;
 
     public AgentToolFacade(UserAccountMapper userAccountMapper,
                            ApplicationPlanService applicationPlanService,
@@ -46,7 +47,8 @@ public class AgentToolFacade {
                            SchoolDetailService schoolDetailService,
                            AgentMajorOverviewService majorOverviewService,
                            ObjectMapper objectMapper,
-                           AgentFallbackAdviceService fallbackAdviceService) {
+                           AgentFallbackAdviceService fallbackAdviceService,
+                           AgentMajorCatalogService majorCatalogService) {
         this.userAccountMapper = userAccountMapper;
         this.applicationPlanService = applicationPlanService;
         this.recommendationService = recommendationService;
@@ -54,6 +56,7 @@ public class AgentToolFacade {
         this.majorOverviewService = majorOverviewService;
         this.objectMapper = objectMapper;
         this.fallbackAdviceService = fallbackAdviceService;
+        this.majorCatalogService = majorCatalogService;
     }
 
     public AgentToolResult getUserProfile(Long userId) {
@@ -128,7 +131,7 @@ public class AgentToolFacade {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "majorKeyword is required for recommendMajors");
         }
         UserAccount user = requireRecommendationProfile(userId);
-        RecommendationRequest request = buildRequest(user, RecommendationMode.MAJOR_FIRST, majorKeyword);
+        RecommendationRequest request = buildRequest(user, RecommendationMode.MAJOR_FIRST, canonicalMajorKeyword(majorKeyword));
         RecommendationResponse response = recommendationService.recommend(request);
         return buildRecommendationResult(AgentToolNames.RECOMMEND_MAJORS, response, user, request, onChunk);
     }
@@ -143,7 +146,7 @@ public class AgentToolFacade {
         if (majorKeyword.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "majorKeyword is required for getMajorOverview");
         }
-        AgentMajorOverviewService.MajorOverview overview = majorOverviewService.lookup(majorKeyword);
+        AgentMajorOverviewService.MajorOverview overview = majorOverviewService.lookup(canonicalMajorKeyword(majorKeyword));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("majorName", overview.majorName());
         payload.put("foundInCatalog", overview.foundInCatalog());
@@ -156,6 +159,14 @@ public class AgentToolFacade {
                 ? "已查询“%s”的专业介绍与就业方向。".formatted(overview.majorName())
                 : "未命中“%s”的完整专业主数据，已给出通用培养与就业说明。".formatted(overview.majorName());
         return new AgentToolResult(AgentToolNames.GET_MAJOR_OVERVIEW, summary, toJson(payload));
+    }
+
+    /**
+     * 阶段③：majorKeyword 归一化到目录标准名（本地提取与 LLM 参数两条路径在此汇合）。
+     * 无法解析时原样返回——归一化绝不硬拒绝，保住推荐引擎的优雅降级。
+     */
+    private String canonicalMajorKeyword(String majorKeyword) {
+        return majorCatalogService.resolve(majorKeyword).orElse(majorKeyword);
     }
 
     public AgentToolResult getSchoolDetail(Long userId, Map<String, Object> toolArgs, List<AgentMessage> recentMessages) {
@@ -171,7 +182,9 @@ public class AgentToolFacade {
         SchoolDetailResponse detail = schoolDetailService.getSchoolDetail(
                 universityId,
                 user.getExamProvince(),
-                user.getSubjectType().name()
+                // 库里 subject_type 存中文（物理/历史），必须走 getDbValue()；
+                // 传枚举 name()（PHYSICS）会静默落空并触发丢省份/科类的宽松回退（L-20260921-08）
+                user.getSubjectType().getDbValue()
         );
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -215,7 +228,8 @@ public class AgentToolFacade {
         SchoolDetailResponse detail = schoolDetailService.getSchoolDetailByName(
                 universityName,
                 user.getExamProvince(),
-                user.getSubjectType().name()
+                // 同上：getDbValue() 而非 name()，避免静默过滤触发宽松回退（L-20260921-08）
+                user.getSubjectType().getDbValue()
         );
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -477,7 +491,6 @@ public class AgentToolFacade {
     }
 
     private ObjectNode resolveSelectedRecommendationItem(Long userId, Map<String, Object> toolArgs, List<AgentMessage> recentMessages) {
-        int selectionIndex = parseSelectionIndex(toolArgs == null ? null : toolArgs.get("selectionIndex"));
         JsonNode recommendationPayload = findLatestRecommendationPayload(recentMessages);
         if (recommendationPayload == null) {
             // The recommendation round fell out of the recent-message window (e.g. the
@@ -488,6 +501,22 @@ public class AgentToolFacade {
         if (recommendationPayload == null || !recommendationPayload.path("topItems").isArray()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No recommendation item available for addPlanItem");
         }
+        // 按校名匹配（L-20260921 扫描）："把中南大学加入志愿单"不再默认加第 1 项，
+        // 而是在最近推荐载荷里按学校名定位；找不到就明确告知，不静默加错项。
+        String namedSchool = argText(toolArgs, "schoolName");
+        if (!namedSchool.isBlank()) {
+            JsonNode topItems = recommendationPayload.path("topItems");
+            for (int i = 0; i < topItems.size(); i++) {
+                JsonNode item = topItems.get(i);
+                String label = item.path("label").asText("") + " " + item.path("universityName").asText("");
+                if (label.contains(namedSchool) && item instanceof ObjectNode objectNode) {
+                    return objectNode.deepCopy();
+                }
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "最近一轮推荐中没有「%s」。可以说序号（第 1-%d 个），或先让我重新推荐学校。".formatted(namedSchool, topItems.size()));
+        }
+        int selectionIndex = parseSelectionIndex(toolArgs == null ? null : toolArgs.get("selectionIndex"));
         int total = recommendationPayload.path("topItems").size();
         if (total < selectionIndex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -498,6 +527,14 @@ public class AgentToolFacade {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid selected recommendation item");
         }
         return objectNode.deepCopy();
+    }
+
+    private String argText(Map<String, Object> toolArgs, String key) {
+        if (toolArgs == null) {
+            return "";
+        }
+        Object value = toolArgs.get(key);
+        return value == null ? "" : String.valueOf(value).trim();
     }
 
     private JsonNode rebuildRecommendationPayload(Long userId) {

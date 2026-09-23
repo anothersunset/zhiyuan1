@@ -258,12 +258,12 @@ CREATE TABLE `university` (
   `tags` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `nature` varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'åŠžå­¦æ€§è´¨: å…¬åŠž/æ°‘åŠž/ä¸­å¤–åˆä½œåŠžå­¦',
-  `school_type` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'é™¢æ ¡ç±»åž‹: ç»¼åˆ/ç†å·¥/å¸ˆèŒƒ/åŒ»è¯/è´¢ç»/æ”¿æ³•/è¯­è¨€/è‰ºæœ¯/ä½“è‚²/å†œæž—/æ°‘æ—',
-  `soft_ranking` int DEFAULT NULL COMMENT 'è½¯ç§‘ä¸­å›½å¤§å­¦æŽ’å',
-  `postgraduate_rate` decimal(5,2) DEFAULT NULL COMMENT 'ä¿ç ”çŽ‡%',
-  `has_graduate_school` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'æœ‰ç ”ç©¶ç”Ÿé™¢',
-  `has_doctor_program` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'æœ‰åšå£«ç‚¹',
+  `nature` varchar(16) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '办学性质：公办/民办/中外合作办学',
+  `school_type` varchar(32) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '院校类型：综合/理工/师范/医药/财经/政法/语言/艺术/体育/农林/民族',
+  `soft_ranking` int DEFAULT NULL COMMENT '软科中国大学排名',
+  `postgraduate_rate` decimal(5,2) DEFAULT NULL COMMENT '保研率%',
+  `has_graduate_school` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否设有研究生院',
+  `has_doctor_program` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否设有博士点',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=81 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
