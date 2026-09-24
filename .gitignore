@@ -1,6 +1,7 @@
 .idea/
 *.iml
 .env
+.env.*
 settings.xml
 
 target/
