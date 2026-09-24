@@ -257,3 +257,8 @@
 - Verification scan: all previously flagged items now show either zero hits or legitimate-context false positives (e.g., "59个" contains substring "9个"; "不依赖面包屑" is a negation; "命中率" in design principles section is a principle statement not a claim).
 - Materials now consistent with deployed system: 1,902 universities / 657 majors / 166,176 cutoff rows (REAL 163,928 + SIMULATED 2,248) / 7 provinces / 590 ranked / 283 tests / 99.9% emblem coverage / four-layer agent decision / failure rewrite / rank veto.
 - Competition materials package is ready for submission.
+
+## 2026-09-23 completion: last emblem filled → 1,902/1,902 (100%)
+- 江苏建筑职业技术学院 (the final school without an emblem) filled from 掌上高考 CDN upload/logo/1116.jpg → /logos/5033.jpg (17KB). SCHOOL_LOGO_IDS extended to 1,902 entries.
+- Coverage: 1,902/1,902 = **100%**. No schools remain with first-character placeholder.
+- Deployed; live verified /logos/5033.jpg = 200 (17KB).
