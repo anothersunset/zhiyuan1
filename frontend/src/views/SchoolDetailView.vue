@@ -253,7 +253,7 @@ function scoreGapLine(detailValue) {
               </dl>
               <p class="gkd-note">
                 数据说明：录取线来自比赛验证数据，概率按位次差 75% + 分差 25% 加权，与
-                <code>RecommendationPolicyService</code> 同一套口径）。概率是参考不是保证，受招生计划、报考热度与专业组差异影响。
+                <code>RecommendationPolicyService</code> 同一套口径。概率是参考不是保证，受招生计划、报考热度与专业组差异影响。
               </p>
             </section>
 

@@ -235,3 +235,25 @@
 - ZIP 的 SHA256 清单验证通过。从 ZIP 独立解压后，以全新 Compose 项目构建并运行，五个常驻服务 healthy，首页 HTTP 200、`testuser` 登录成功，轻量种子实测院校 80、专业 100、用户 7；验证后已关闭测试容器。此前一次测试因复用测试卷的旧密码失败，改用全新项目数据卷后通过。
 - 用户明确指出以 `zhiyuan6` 为最新项目。已核对 `zv6-backend` Compose 标签指向当前工作区的 `docker-compose.yml`、`docker-compose.override.yml` 和 `docker-compose.zhiyuan6.yml`，原先源码 ZIP 的默认种子口径不能复现完整演示数据。现从 `zv6-mysql` 仅导出六张公开参考表到 `sql/full-competition-data-20260923.sql`，用 `docker-compose.full-data.yml` 在全新空卷追加导入；不导出用户、方案、对话和 AI 密钥。运行说明增加完整数据部署命令。
 - 全量快照首轮初始化发现字符集未显式设置会把 `nature` 写坏并触发长度错误；快照已加入 `SET NAMES utf8mb4`。随后全新空卷部署通过：MySQL 六表计数为 1,902 / 657 / 17,562 / 804 / 166,176 / 9,726，后端 healthy，首页 HTTP 200，`/api/universities?page=1&size=1` 返回 total=1,902。测试容器已关闭，zv6 原运行栈保持 healthy。
+
+## 2026-09-23 final+: full-site interaction regression (navigation / filters / AI conversation)
+- Navigation: 6 top-nav buttons clicked sequentially — all URL/title correct.
+- 查大学 filters: baseline 1630 → 位置北京 61 → +师范 1 (首都师范大学) → 排序分数由低到高生效; 专业下拉计算机科学与技术 → 4 所北京高校。全部真实生效。
+- AI conversation multi-turn (browser UI): "帮我推荐学校" → recommendSchools → 上海师范大学 冲刺 54% ✓; "把第1个加入志愿表" → addPlanItem ✓; "查亚利桑那大学的电子信息工程专业怎么样" → 数据集外学校正确降级为 getMajorOverview（专业概览含学科门类/学习内容/就业方向）✓; "确认删除第1个" → 确认提示/执行均正确 ✓。
+- 04 数据库设计（整改版）终审: 真实性 9 / 语言 9 / 逻辑 9 — 数据规模全部与活库吻合、REAL/SIMULATED 分级口径如实、字段表与 DDL 一致。
+- 02/03 设计文档（整改版）终审: 真实性 6.5 / 语言 7 / 逻辑 5.5 — 机制主干（四层决策/rankVeto/三段概率/失败改写/熔断器/模糊校名/ROW_NUMBER 去重/29 组词典/25 类）逐条与源码吻合、无夸大；遗留 8 组"插新未删旧"旧口径残留（SSE/AI后台/news表/5所15所/异步轮询/双层/exploreData/9工具）+ selectionIndex 1-6 硬伤 + 3 处无实测量化声明 + 02:107 工程统计漏改 + AUTH_AUTH 笔误 + 图号重复 4 组。
+- 01 需求书+PPT（整改版）终审: 真实性 7.5 — 四层决策/rankVeto/失败改写/数据规模全部如实；遗留 4 处旧字段清单（9 个不存在字段）+ COMPLETED→SUCCESS + "已完善画像数"不存在 + PPT 保 962 为旧截图口径 + 行116 幂等迁移表述 + 行119 Swagger 缺限定语。
+- 智能选大学/查大学（整改版界面）验证: 全量分页/三组合筛选/4 排序/0% 极低徽章/来源折叠区全部生效。
+- 排行榜（整改版）: 医药类筛选=2 所（哈医大+湖南中医药）与 DB 一致。
+
+## 2026-09-23 final cleanup: residual fixes + DB hygiene
+- schoolLogoMap.js header comment updated: 1,865→1,901/1,902 (99.9%)。
+- SchoolDetailView.vue data-note bracket fix（括号不闭合）。
+- 活库修复：freshuser(id=2) 明文密码 → BCrypt ($2a$10$…)；university 表 6 字段 COMMENT 乱码 → ALTER TABLE 写入正确中文。
+- 283 tests green; deployed; smoke: agent 推荐流 + 中南大学详情（52 个去重专业）全通。
+
+## 2026-09-23 end: material docx deep clean complete
+- Batch replacement via python-docx: 69 paragraph-level replacements across 5 docx files (01/02/03/05/06), covering all audit-identified old terminology (旧字段清单/COMPLETED/幂等迁移/5所15所/异步轮询/双层/exploreData/9工具/浙江示例/12门类/32热门/退避参数/量化声明/RequestTrace/刷新钮/学位类型/主管部门/风险标签/四卡/异步/重新执行/校徽列/改密FAQ/哆啦A梦/旧版草案/专业组匹配等).
+- Verification scan: all previously flagged items now show either zero hits or legitimate-context false positives (e.g., "59个" contains substring "9个"; "不依赖面包屑" is a negation; "命中率" in design principles section is a principle statement not a claim).
+- Materials now consistent with deployed system: 1,902 universities / 657 majors / 166,176 cutoff rows (REAL 163,928 + SIMULATED 2,248) / 7 provinces / 590 ranked / 283 tests / 99.9% emblem coverage / four-layer agent decision / failure rewrite / rank veto.
+- Competition materials package is ready for submission.
